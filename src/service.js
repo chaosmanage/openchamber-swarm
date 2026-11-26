@@ -138,6 +138,7 @@ const server=http.createServer(async(req,res)=>{try{if(!auth(req))return json(re
  if(u.pathname==='/settings'){const next={};for(const k of ['coordinatorModel','workerModel','verifierModel','monitorModel']){const v=String(b[k]||'').trim();if(v&&!modelRef(v))throw Error('Use provider/model format');next[k]=v;}next.monitorReasoning=b.monitorReasoning===true||b.monitorReasoning==='on';state.settings=next;persist();return json(res,200,state.settings);}
  if(u.pathname==='/session-deleted'){const s=state.swarms.find(s=>s.members[0].sessionId===b.sessionId&&normalizeDir(s.directory)===normalizeDir(b.directory));if(s)removeSwarm(s);else{const f=locate(b.sessionId);if(f&&normalizeDir(f.s.directory)===normalizeDir(b.directory)){f.m.state='retired';f.m.error='Conversation deleted';f.m.queue=[];persist(f.s);}}return json(res,200,{ok:true});}
  if(u.pathname==='/start')return json(res,200,begin(b));
+ if(u.pathname==='/title'){const f=locate(b.sessionId);if(!f||f.m.role!=='coordinator'||normalizeDir(f.s.directory)!==normalizeDir(b.directory))return json(res,200,{ok:false});const title=String(b.title||'').trim();if(title&&title.length<=64){f.s.title=title;persist(f.s);}return json(res,200,{ok:true});}
  if(u.pathname==='/agent')return json(res,200,handleAgent(b));
  const s=lookup(b.id);if(!s)throw Error('Unknown swarm');
  if(u.pathname==='/message'){if(s.status!=='running')throw Error('Swarm not running');appendPost(s,'user',b.to?[b.to]:[],b.text,'instruction');persist(s);schedule();return json(res,200,{ok:true});}

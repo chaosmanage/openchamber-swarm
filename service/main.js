@@ -224,10 +224,15 @@ var memberPrompt = (s, m) => "You are @" + m.name + " (" + m.role + ") in swarm 
 Your brief: ` + m.brief + `
 Owned paths: ` + (m.paths.join(", ") || "read-only or as scoped by brief") + `
 Board mentions are delivered automatically to your context; use swarm_read for history and swarm_post to send messages with recipient names or @mentions in the text, and swarm_status to see members. Post evidence, file paths, tests, and blockers. End the turn after reporting; wait for a new mention. Never edit outside assigned scope or weaken tests. ` + (m.role === "verifier" ? "Independently check diffs, evidence, and tests. Post kind=verified only if all acceptance criteria pass; otherwise kind=changes with recipients of offending workers. Send the final result to coordinator." : "Send kind=done when work is ready for independent verification, not when the whole swarm is complete.");
+function shortTitle(task) {
+  const first = String(task).trim().split(/\n|[.!?](?:\s|$)/)[0].trim().replace(/^(?:please\s+)?(?:create|build|make|develop|implement|write|design)\s+(?:me\s+)?(?:a[n]?\s+)?/i, "");
+  const t = first.split(/\s+/).slice(0, 9).join(" ").slice(0, 64).trim() || "Collaborative task";
+  return t[0].toUpperCase() + t.slice(1);
+}
 function createSwarm({ task, directory, sessionId, model, number }) {
   if (typeof task !== "string" || !task.trim() || task.length > 12000 || typeof directory !== "string" || !directory || sessionId != null && typeof sessionId !== "string")
     throw Error("Task and project directory are required");
-  return { id: randomUUID(), key: "SWARM-" + number, title: task.trim().slice(0, 96), task: task.trim(), directory, created: Date.now(), updated: Date.now(), status: "running", turns: 0, posts: [], seenEvents: [], members: [{ name: "coordinator", role: "coordinator", sessionId: sessionId || null, model: model || "", state: "active", brief: task, paths: [], queue: [], lastPost: 0, read: 0, taskState: "working" }], summary: "", monitorAt: 0, monitor: { checks: 0, lastCheck: 0, nextCheck: 0, action: "Starting", lastAction: 0 }, history: [] };
+  return { id: randomUUID(), key: "SWARM-" + number, title: shortTitle(task), task: task.trim(), directory, created: Date.now(), updated: Date.now(), status: "running", turns: 0, posts: [], seenEvents: [], members: [{ name: "coordinator", role: "coordinator", sessionId: sessionId || null, model: model || "", state: "active", brief: task, paths: [], queue: [], lastPost: 0, read: 0, taskState: "working" }], summary: "", monitorAt: 0, monitor: { checks: 0, lastCheck: 0, nextCheck: 0, action: "Starting", lastAction: 0 }, history: [] };
 }
 function addMember(s, input) {
   const name = String(input.name || "").replace(/^@/, "").toLowerCase();
@@ -943,6 +948,17 @@ var server = http.createServer(async (req, res) => {
     }
     if (u.pathname === "/start")
       return json(res, 200, begin(b));
+    if (u.pathname === "/title") {
+      const f = locate(b.sessionId);
+      if (!f || f.m.role !== "coordinator" || normalizeDir(f.s.directory) !== normalizeDir(b.directory))
+        return json(res, 200, { ok: false });
+      const title = String(b.title || "").trim();
+      if (title && title.length <= 64) {
+        f.s.title = title;
+        persist(f.s);
+      }
+      return json(res, 200, { ok: true });
+    }
     if (u.pathname === "/agent")
       return json(res, 200, handleAgent(b));
     const s = lookup(b.id);

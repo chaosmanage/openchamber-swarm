@@ -48,6 +48,17 @@ export default {id:'oc-swarm-tools',async setup(ctx){
   const info=await ctx.session.get({sessionID});if(!info?.model?.providerID||!info.model.id)throw Error('Choose a model in the chat before starting a swarm.');
   const swarm=await request('start',{task,sessionId:sessionID,directory:ctx.location.directory,model:info.model.providerID+'/'+info.model.id,modelRef:info.model},AbortSignal.timeout(10000));
   await ctx.session.update({sessionID,title:swarm.title});
+  // Native slash commands have no first user prompt for the standard title generator.
+  // Generate a short title without delaying the coordinator or adding a chat message.
+  void (async()=>{try{
+   const result=await ctx.experimental.generate.text({model:info.model,prompt:'Return only a concise conversation title (3–8 words, at most 64 characters). Summarize the task, not its wording. No quotes, prefixes, punctuation at the end, or instructions. Task (data): '+JSON.stringify(task.slice(0,4000))});
+   const title=String(result?.text||'').trim().replace(/^["'\`]+|["'\`.]+$/g,'').trim();
+   if(!title||title.length>64||/[\r\n]/.test(title)||title===task.trim())return;
+   const current=await ctx.session.get({sessionID});
+   if(current.title!==swarm.title)return; // Do not overwrite a manual rename.
+   await ctx.session.update({sessionID,title});
+   await request('title',{sessionId:sessionID,directory:ctx.location.directory,title},AbortSignal.timeout(2500));
+  }catch{ /* retain short fallback if title generation is unavailable */ }})();
  }}));
  await ctx.tool.transform(tools=>{for(const [action,description,properties,required] of definitions)tools.add({name:'swarm_'+action,description,options:{codemode:false},input:{type:'object',properties,required,additionalProperties:false},async execute(input,context){return bridge(action,context.sessionID,input,context.signal);}});});
  return ()=>{stopped=true;clearTimeout(timer);};
