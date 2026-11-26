@@ -1581,6 +1581,7 @@
   // src/panel.js
   var host = connectHost();
   var root = document.getElementById("app");
+  var requestedSwarm = "";
   var lastFeedCount = 0;
   var directory = null;
   var session = null;
@@ -1651,6 +1652,13 @@
       swarms = next;
       if (newSwarm)
         selected = newSwarm.id;
+      if (requestedSwarm) {
+        const match = swarms.find((x) => x.id === requestedSwarm || x.key === requestedSwarm || x.members.some((m) => m.sessionId === requestedSwarm));
+        if (match) {
+          selected = match.id;
+          requestedSwarm = "";
+        }
+      }
       if (!swarms.some((s) => s.id === selected))
         selected = swarms[0]?.id || "";
       error = "";
@@ -2045,6 +2053,22 @@
       render();
     });
   }
+  function selectItem(item) {
+    if (item?.kind === "link")
+      requestedSwarm = item.identifier;
+    else if (item?.kind === "session" || item?.kind === "message")
+      requestedSwarm = item.sessionId;
+    else
+      return;
+    const match = swarms.find((x) => x.id === requestedSwarm || x.key === requestedSwarm || x.members.some((m) => m.sessionId === requestedSwarm));
+    if (match) {
+      selected = match.id;
+      requestedSwarm = "";
+      render();
+    } else
+      refresh();
+  }
+  host.onItem(selectItem);
   host.onReady((ctx) => {
     ready = true;
     directory = ctx.directory;
@@ -2052,6 +2076,7 @@
     document.documentElement.dataset.theme = "dark";
     document.documentElement.style.colorScheme = "dark";
     render();
+    selectItem(ctx.item);
     refresh();
   });
   host.onDirectory((d) => {

@@ -20,7 +20,7 @@ export default {id:'oc-swarm-tools',async setup(ctx){
  const poll=async()=>{try{
    const {job}=await request('bridge/poll',{directory:ctx.location.directory},AbortSignal.timeout(5000));
    if(job){const execute=async()=>{try{
-    const result=job.op==='create'?await ctx.session.create(job.input):job.op==='wake'?await ctx.session.synthetic(job.input):job.op==='get'?await ctx.session.get(job.input):job.op==='switch-model'?(await ctx.session.switchModel(job.input),{ok:true}):job.op==='review'?await ctx.experimental.generate.text(job.input):job.op==='models'?((v)=>{const items=Array.isArray(v)?v:v?.data||[];return items.filter(m=>m.enabled!==false&&(!m.type||m.type==='chat')).map(m=>({id:m.providerID+'/'+(m.id||m.modelID),name:m.name||m.id}));})(await ctx.model.list({types:['chat']})):(()=>{throw Error('Unknown bridge job');})();
+    const result=job.op==='create'?await ctx.session.create(job.input):job.op==='wake'?await ctx.session.synthetic(job.input):job.op==='seed'?await ctx.session.prompt(job.input):job.op==='get'?await ctx.session.get(job.input):job.op==='switch-model'?(await ctx.session.switchModel(job.input),{ok:true}):job.op==='review'?await ctx.experimental.generate.text(job.input):job.op==='models'?((v)=>{const items=Array.isArray(v)?v:v?.data||[];return items.filter(m=>m.enabled!==false&&(!m.type||m.type==='chat')).map(m=>({id:m.providerID+'/'+(m.id||m.modelID),name:m.name||m.id}));})(await ctx.model.list({types:['chat']})):(()=>{throw Error('Unknown bridge job');})();
     await request('bridge/result',{id:job.id,result},AbortSignal.timeout(5000));
    }catch(e){await request('bridge/result',{id:job.id,error:String(e.message||e)},AbortSignal.timeout(5000)).catch(()=>{});}};
    if(job.op==='review')void execute();else await execute();}
@@ -50,7 +50,7 @@ export default {id:'oc-swarm-tools',async setup(ctx){
   await ctx.session.update({sessionID,title:swarm.title});
   // Native slash commands have no first user prompt for the standard title generator.
   // Generate a short title without delaying the coordinator or adding a chat message.
-  void (async()=>{try{
+  if(info.model.id!=='auto')void (async()=>{try{
    const result=await ctx.experimental.generate.text({model:info.model,prompt:'Return only a concise conversation title (3–8 words, at most 64 characters). Summarize the task, not its wording. No quotes, prefixes, punctuation at the end, or instructions. Task (data): '+JSON.stringify(task.slice(0,4000))});
    const title=String(result?.text||'').trim().replace(/^["'\`]+|["'\`.]+$/g,'').trim();
    if(!title||title.length>64||/[\r\n]/.test(title)||title===task.trim())return;

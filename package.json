@@ -1,11 +1,11 @@
 {
   "name": "openchamber-swarm",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "private": true,
   "type": "module",
   "description": "Collaborative multi-agent swarm for OpenChamber and OpenCode",
   "scripts": {
-    "build": "bun build src/panel.js --target=browser --format=iife --outfile=panel/main.js && bun build src/service.js --target=node --outfile=service/main.js",
+    "build": "bun build src/panel.js --target=browser --format=iife --outfile=panel/main.js && bun build src/service.js --target=node --outfile=service/main.js && bun build src/activity.js --target=browser --format=iife --outfile=panel/activity.js",
     "test": "node --test tests/*.test.js"
   },
   "dependencies": {
@@ -63,6 +63,26 @@
           "name": "Swarm",
           "icon": "icon.svg",
           "output": "text"
+        }
+      ],
+      "actions": [
+        {
+          "id": "open-swarm",
+          "label": "Open Swarm",
+          "icon": "icon.svg",
+          "where": "session",
+          "mode": "open"
+        }
+      ],
+      "blocks": [
+        {
+          "name": "SwarmActivity",
+          "description": "Live swarm members, progress, and Open Swarm button. Use once at the start of a coordinator reply.",
+          "args": [
+            "swarmId"
+          ],
+          "entry": "panel/activity.html",
+          "height": 180
         }
       ]
     }

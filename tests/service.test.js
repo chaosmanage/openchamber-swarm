@@ -25,10 +25,10 @@ test('scoped native bridge, implicit context, sleeping wake, busy delivery, moni
  bridge=(async()=>{while(!quit){try{
   assert.equal((await req('/bridge/poll',{directory:'/other-project'})).job,null);
   const {job}=await req('/bridge/poll',{directory:'/repo'});
-  if(job){nativeCalls.push(job);let result;if(job.op==='create'){result={id:job.input.id,model:job.input.model||{providerID:'test',id:'selected'}};statuses.set(result.id,'idle');}else if(job.op==='get'){result={id:job.input.sessionID,model:{providerID:'test',id:'selected'}};}else if(job.op==='switch-model'){result={ok:true};}else if(job.op==='review'){result={text:'Check the remaining verifier report.'};}else{assert.equal(job.op,'wake');statuses.set(job.input.sessionID,'busy');result={id:job.input.id};}await req('/bridge/result',{id:job.id,result});if(job.op==='wake')await inject(job.input.sessionID);}
+  if(job){nativeCalls.push(job);let result;if(job.op==='create'){result={id:job.input.id,model:job.input.model||{providerID:'test',id:'selected'}};statuses.set(result.id,'idle');}else if(job.op==='get'){result={id:job.input.sessionID,model:{providerID:'test',id:'selected'}};}else if(job.op==='switch-model'){result={ok:true};}else if(job.op==='review'){result={text:'Check the remaining verifier report.'};}else{assert.ok(['seed','wake'].includes(job.op));statuses.set(job.input.sessionID,'busy');result={id:job.input.id};}await req('/bridge/result',{id:job.id,result});if(['seed','wake'].includes(job.op))await inject(job.input.sessionID);}
  }catch(e){if(!quit&&e.code==='ERR_ASSERTION')throw e;}await new Promise(r=>setTimeout(r,20));}})();
  const coord=await wait(async()=>{const m=await member('coordinator');return m.state==='active'&&m.pending===0&&m;});
- assert.ok(coord.sessionId.startsWith('ses_'));assert.equal(coord.model,'test/selected');assert.match(contexts.get(coord.sessionId).text,/Implement test/);
+ assert.ok(coord.sessionId.startsWith('ses_'));assert.ok(nativeCalls.some(c=>c.op==='seed'&&c.input.sessionID===coord.sessionId&&c.input.text==='Implement test'));assert.equal(coord.model,'test/selected');assert.match(contexts.get(coord.sessionId).text,/Implement test/);
  await agent(coord.sessionId,'add',{name:'fix-1',brief:'Fix issue',paths:['x.js']});
  await agent(coord.sessionId,'add',{name:'verify',brief:'Check work',role:'verifier',deferred:true});
  const w=await wait(async()=>{const m=await member('fix-1');return m?.state==='active'&&m.pending===0&&m;});
@@ -37,18 +37,18 @@ test('scoped native bridge, implicit context, sleeping wake, busy delivery, moni
  assert.deepEqual((await req('/context',{sessionId:w.sessionId,directory:'/other-project'})),{ok:true});
  await agent(coord.sessionId,'post',{text:'@fix-1 Extra acceptance criterion'});
  await wait(async()=> (await member('fix-1')).pending===1);
- const before=nativeCalls.filter(c=>c.op==='wake'&&c.input.sessionID===w.sessionId).length;
- const busyUpdate=await inject(w.sessionId);assert.match(busyUpdate.text,/Extra acceptance criterion/);assert.equal((await member('fix-1')).pending,0);assert.equal(nativeCalls.filter(c=>c.op==='wake'&&c.input.sessionID===w.sessionId).length,before);
+ const before=nativeCalls.filter(c=>['seed','wake'].includes(c.op)&&c.input.sessionID===w.sessionId).length;
+ const busyUpdate=await inject(w.sessionId);assert.match(busyUpdate.text,/Extra acceptance criterion/);assert.equal((await member('fix-1')).pending,0);assert.equal(nativeCalls.filter(c=>['seed','wake'].includes(c.op)&&c.input.sessionID===w.sessionId).length,before);
  const end=async(id)=>{statuses.set(id,'idle');await req('/idle',{sessionId:id,directory:'/repo'});};
  await end(w.sessionId);await end(coord.sessionId);
  await agent(coord.sessionId,'post',{text:'@fix-1 Resume with a second criterion'});
  // Test retry throttling without waiting real 10 seconds: monitor wakes once the grace period expires.
- const wake=await wait(()=>nativeCalls.filter(c=>c.op==='wake'&&c.input.sessionID===w.sessionId)[1],15000);
- assert.equal(wake.input.resume,true);assert.doesNotMatch(wake.input.text,/second criterion/);await wait(async()=>contexts.get(w.sessionId)?.text.includes('second criterion'));
+ const wake=await wait(()=>nativeCalls.filter(c=>['seed','wake'].includes(c.op)&&c.input.sessionID===w.sessionId)[1],15000);
+ assert.equal(wake.op,'wake');assert.equal(wake.input.resume,true);assert.doesNotMatch(wake.input.text,/second criterion/);await wait(async()=>contexts.get(w.sessionId)?.text.includes('second criterion'));
  assert.equal((await member('fix-1')).sessionId,w.sessionId);
  await agent(w.sessionId,'post',{text:'@coordinator Test result',kind:'done'});
  await end(w.sessionId);
- await wait(()=>nativeCalls.filter(c=>c.op==='wake'&&c.input.sessionID===coord.sessionId)[1],15000);await wait(async()=>contexts.get(coord.sessionId)?.text.includes('Test result'));
+ await wait(()=>nativeCalls.filter(c=>['seed','wake'].includes(c.op)&&c.input.sessionID===coord.sessionId)[1],15000);await wait(async()=>contexts.get(coord.sessionId)?.text.includes('Test result'));
  await agent(coord.sessionId,'post',{text:'@verify Check independently'});
  const verifier=await wait(async()=>{const m=await member('verify');return m?.state==='active'&&m.pending===0&&m;});
  assert.match(contexts.get(verifier.sessionId).text,/Check independently/);

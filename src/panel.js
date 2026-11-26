@@ -1,5 +1,6 @@
 import {connectHost} from '@openchamber/sdk';
 const host=connectHost(), root=document.getElementById('app');
+let requestedSwarm='';
 let lastFeedCount=0;
 let directory=null,session=null,swarms=[],selected='',tab='Overview',mode='Hive',filter='',memberFilter='',replay=null,playing=false,timer=null,error='',loading=false,ready=false,graphMember='',follow=true,memberSearch='',hideInactive=false,zoomLevel=1,pace=1,newFormOpen=false,graphExpanded=false,settingsOpen=false,deleteConfirm=false,stopConfirm=false,swarmSettings={coordinatorModel:'',workerModel:'',verifierModel:'',monitorModel:'',monitorReasoning:false},availableModels=[];
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -24,7 +25,7 @@ async function launch(task){
  return true;
 }
 function current(){return swarms.find(s=>s.id===selected)||swarms[0];}
-async function refresh(){if(!ready||loading||(!directory&&!session))return;loading=true;try{const next=await api('/list',null,{directory:directory||'',sessionId:session?.id||''});if(JSON.stringify(next)===JSON.stringify(swarms)&&!error)return;const newSwarm=next.find(s=>!swarms.some(old=>old.id===s.id));swarms=next;if(newSwarm)selected=newSwarm.id;if(!swarms.some(s=>s.id===selected))selected=swarms[0]?.id||'';error='';render();}catch(e){error=e.message;render();}finally{loading=false;}}
+async function refresh(){if(!ready||loading||(!directory&&!session))return;loading=true;try{const next=await api('/list',null,{directory:directory||'',sessionId:session?.id||''});if(JSON.stringify(next)===JSON.stringify(swarms)&&!error)return;const newSwarm=next.find(s=>!swarms.some(old=>old.id===s.id));swarms=next;if(newSwarm)selected=newSwarm.id;if(requestedSwarm){const match=swarms.find(x=>x.id===requestedSwarm||x.key===requestedSwarm||x.members.some(m=>m.sessionId===requestedSwarm));if(match){selected=match.id;requestedSwarm='';}}if(!swarms.some(s=>s.id===selected))selected=swarms[0]?.id||'';error='';render();}catch(e){error=e.message;render();}finally{loading=false;}}
 async function action(path,body){try{error='';const result=await api(path,body);await refresh();return result;}catch(e){error=e.message;render();return null;}}
 const short=(t,n=100)=>String(t||'').length>n?String(t).slice(0,n-1)+'…':String(t||'');
 const taskLabel=m=>short((m.brief||m.name).split(/[\n.]/)[0],86);
@@ -120,5 +121,7 @@ function render(){
  root.querySelector('#live')?.addEventListener('click',()=>{clearInterval(timer);playing=false;replay=null;render();});
  root.querySelector('#play')?.addEventListener('click',()=>{if(playing){clearInterval(timer);playing=false;render();return;}playing=true;if(replay===null||replay>=s.posts.length)replay=0;timer=setInterval(()=>{if(replay>=current().posts.length){clearInterval(timer);playing=false;}else replay++;render();},650/pace);render();});
 }
-host.onReady(ctx=>{ready=true;directory=ctx.directory;session=ctx.session;document.documentElement.dataset.theme='dark';document.documentElement.style.colorScheme='dark';render();refresh();});
+function selectItem(item){if(item?.kind==='link')requestedSwarm=item.identifier;else if(item?.kind==='session'||item?.kind==='message')requestedSwarm=item.sessionId;else return;const match=swarms.find(x=>x.id===requestedSwarm||x.key===requestedSwarm||x.members.some(m=>m.sessionId===requestedSwarm));if(match){selected=match.id;requestedSwarm='';render();}else refresh();}
+host.onItem(selectItem);
+host.onReady(ctx=>{ready=true;directory=ctx.directory;session=ctx.session;document.documentElement.dataset.theme='dark';document.documentElement.style.colorScheme='dark';render();selectItem(ctx.item);refresh();});
 host.onDirectory(d=>{directory=d;refresh();});host.onSession(s=>{session=s;const match=swarms.find(x=>x.members.some(m=>m.sessionId===s?.id));if(match)selected=match.id;render();refresh();});host.onServiceEvent(e=>{if(e.topic==='swarm.changed')refresh();});setInterval(refresh,7000);
