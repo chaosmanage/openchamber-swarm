@@ -1,5 +1,7 @@
 # OpenChamber Swarm (0.4.4)
 A clean-room, independently implemented preview of Antigravity-style collaborative coding agents. Targets OpenChamber SDK 2.8.0 and OpenCode plugin API 2.4.2.
+![Uploading image.png…]()
+
 
 ## Install
 On this VPS the project is /workspace/projects/swarm. In OpenChamber Settings → Extensions, add that local folder and review the requested capabilities. The background service and bundled OpenCode plugin execute locally with the server user's privileges; session control and transcript grants are required. Install/enable only after reviewing the source. No existing server configuration or global OpenCode settings have been changed. The bundled UI/service are already built.
