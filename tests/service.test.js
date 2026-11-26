@@ -25,7 +25,7 @@ test('scoped native bridge, implicit context, sleeping wake, busy delivery, moni
  bridge=(async()=>{while(!quit){try{
   assert.equal((await req('/bridge/poll',{directory:'/other-project'})).job,null);
   const {job}=await req('/bridge/poll',{directory:'/repo'});
-  if(job){nativeCalls.push(job);let result;if(job.op==='create'){result={id:job.input.id,model:job.input.model||{providerID:'test',id:'selected'}};statuses.set(result.id,'idle');}else if(job.op==='get'){result={id:job.input.sessionID,model:{providerID:'test',id:'selected'}};}else{assert.equal(job.op,'wake');statuses.set(job.input.sessionID,'busy');result={id:job.input.id};}await req('/bridge/result',{id:job.id,result});if(job.op==='wake')await inject(job.input.sessionID);}
+  if(job){nativeCalls.push(job);let result;if(job.op==='create'){result={id:job.input.id,model:job.input.model||{providerID:'test',id:'selected'}};statuses.set(result.id,'idle');}else if(job.op==='get'){result={id:job.input.sessionID,model:{providerID:'test',id:'selected'}};}else if(job.op==='switch-model'){result={ok:true};}else if(job.op==='review'){result={text:'Check the remaining verifier report.'};}else{assert.equal(job.op,'wake');statuses.set(job.input.sessionID,'busy');result={id:job.input.id};}await req('/bridge/result',{id:job.id,result});if(job.op==='wake')await inject(job.input.sessionID);}
  }catch(e){if(!quit&&e.code==='ERR_ASSERTION')throw e;}await new Promise(r=>setTimeout(r,20));}})();
  const coord=await wait(async()=>{const m=await member('coordinator');return m.state==='active'&&m.pending===0&&m;});
  assert.ok(coord.sessionId.startsWith('ses_'));assert.equal(coord.model,'test/selected');assert.match(contexts.get(coord.sessionId).text,/Implement test/);
@@ -57,6 +57,22 @@ test('scoped native bridge, implicit context, sleeping wake, busy delivery, moni
  assert.ok((await state()).monitor.checks>1);assert.ok((await state()).history.some(h=>h.state==='waiting'));
  await req('/stop',{id:s.id});assert.equal((await state()).status,'stopped');
  assert.equal(calls.filter(c=>['sessions.start','sessions.send'].includes(c.method)).length,0);
+ await req('/settings',{coordinatorModel:'test/lead',workerModel:'test/worker',verifierModel:'test/verifier',monitorModel:'test/supervisor',monitorReasoning:true});
+ const second=await req('/start',{task:'Role model settings test',directory:'/repo',sessionId:'ses_role_test',model:'test/selected'});
+ const roleState=async()=> (await req('/list?directory=%2Frepo')).find(s=>s.id===second.id);
+ const roleMember=async n=>(await roleState()).members.find(m=>m.name===n);
+ await wait(async()=>{const m=await roleMember('coordinator');return m.state==='active'&&m.pending===0;});
+ assert.equal((await roleMember('coordinator')).model,'test/lead');
+ assert.ok(nativeCalls.some(c=>c.op==='switch-model'&&c.input.model.id==='lead'));
+ await agent('ses_role_test','add',{name:'role-worker',brief:'Worker test',role:'worker'});
+ await agent('ses_role_test','add',{name:'role-verifier',brief:'Verifier test',role:'verifier'});
+ await wait(async()=> (await roleMember('role-worker'))?.pending===0&&(await roleMember('role-verifier'))?.pending===0);
+ assert.ok(nativeCalls.some(c=>c.op==='create'&&c.input.model?.id==='worker'));
+ assert.ok(nativeCalls.some(c=>c.op==='create'&&c.input.model?.id==='verifier'));
+ await end('ses_role_test');await end((await roleMember('role-worker')).sessionId);await end((await roleMember('role-verifier')).sessionId);
+ await wait(()=>nativeCalls.find(c=>c.op==='review'&&c.input.model?.id==='supervisor'),6000);
+ await wait(async()=> (await roleState()).monitor.review==='Review complete');
+ await req('/delete',{id:second.id});
  quit=true;await bridge;proc.kill();await new Promise(r=>proc.once('exit',r));proc=spawn(process.execPath,['service/main.js'],{env:config,stdio:'ignore'});await wait(()=>req('/health'));assert.equal((await state()).status,'stopped');
  await req('/settings',{workerModel:'test/worker',verifierModel:'test/verifier'});
  assert.equal((await req('/settings')).workerModel,'test/worker');

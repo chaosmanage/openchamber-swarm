@@ -10,7 +10,7 @@ const string={type:'string'}, boolean={type:'boolean'}, list={type:'array',items
 const definitions=[
  ['read','Read latest shared board posts; after is an optional post number.',{after:{type:'integer'}},[]],
  ['status','Read current swarm status, workers, tasks and board.',{},[]],
- ['add','Coordinator only: recruit a named worker or verifier; deferred recruits sleep until mentioned. Assign disjoint relative paths.',{name:string,role:{type:'string',enum:['worker','verifier']},brief:string,paths:list,model:string,deferred:boolean},['name','role','brief']],
+ ['add','Coordinator only: recruit a named worker or verifier; deferred recruits sleep until mentioned. Assign disjoint relative paths. Models are selected by Swarm settings; do not override them.',{name:string,role:{type:'string',enum:['worker','verifier']},brief:string,paths:list,model:string,deferred:boolean},['name','role','brief']],
  ['post','Post on the shared board; @mentions in text or recipient names wake sleeping recipients. Unaddressed posts are board-only. Use done to report completion, verified/changes for verifier result.',{to:list,text:string,kind:{type:'string',enum:['message','brief','question','report','done','verified','changes','blocker']}},['text']],
  ['retire','Coordinator only: retire a worker.',{name:string},['name']],
  ['finish','Coordinator only: complete the swarm after independent verification, or explicitly report failure.',{summary:string,failed:boolean},['summary']]
@@ -19,10 +19,12 @@ export default {id:'oc-swarm-tools',async setup(ctx){
  let stopped=false,timer;
  const poll=async()=>{try{
    const {job}=await request('bridge/poll',{directory:ctx.location.directory},AbortSignal.timeout(5000));
-   if(job){try{
-    const result=job.op==='create'?await ctx.session.create(job.input):job.op==='wake'?await ctx.session.synthetic(job.input):job.op==='get'?await ctx.session.get(job.input):job.op==='models'?((v)=>{const items=Array.isArray(v)?v:v?.data||[];return items.filter(m=>m.enabled!==false&&(!m.type||m.type==='chat')).map(m=>({id:m.providerID+'/'+(m.id||m.modelID),name:m.name||m.id}));})(await ctx.model.list({types:['chat']})):(()=>{throw Error('Unknown bridge job');})();
+   if(job){const execute=async()=>{try{
+    const result=job.op==='create'?await ctx.session.create(job.input):job.op==='wake'?await ctx.session.synthetic(job.input):job.op==='get'?await ctx.session.get(job.input):job.op==='switch-model'?(await ctx.session.switchModel(job.input),{ok:true}):job.op==='review'?await ctx.experimental.generate.text(job.input):job.op==='models'?((v)=>{const items=Array.isArray(v)?v:v?.data||[];return items.filter(m=>m.enabled!==false&&(!m.type||m.type==='chat')).map(m=>({id:m.providerID+'/'+(m.id||m.modelID),name:m.name||m.id}));})(await ctx.model.list({types:['chat']})):(()=>{throw Error('Unknown bridge job');})();
     await request('bridge/result',{id:job.id,result},AbortSignal.timeout(5000));
-   }catch(e){await request('bridge/result',{id:job.id,error:String(e.message||e)},AbortSignal.timeout(5000)).catch(()=>{});}}
+   }catch(e){await request('bridge/result',{id:job.id,error:String(e.message||e)},AbortSignal.timeout(5000)).catch(()=>{});}};
+   if(job.op==='review')void execute();else await execute();}
+
  }catch{}finally{if(!stopped){timer=setTimeout(poll,900);timer.unref?.();}
 }};
  // The context hook is called for each model request, including after tool calls.
