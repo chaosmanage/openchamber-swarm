@@ -28,3 +28,30 @@ main{max-width:1100px;margin:auto;padding:12px 16px 24px}.card,.goal{background:
 .control-icon{display:block;width:15px;height:15px}.header-actions .subtle-button{display:grid;place-items:center;width:26px;height:26px;border-radius:5px}.header-actions .subtle-button:hover{background:#222225}.recent-edge{stroke-dasharray:5 3;animation:message-flow .9s linear infinite}@keyframes message-flow{to{stroke-dashoffset:-8}}.header-title>span{font-weight:600}.graph-canvas .bee-icon{overflow:visible}.member-line .avatar{width:46px;height:44px}.member-line .avatar .bee-icon{width:40px;height:36px}.avatar{background:color-mix(in srgb,var(--role,#aaa) 9%,#171719)}.tabs button{font-weight:500}.tabs button:hover{color:var(--fg)}@media(prefers-reduced-motion:reduce){.recent-edge{animation:none;stroke-dasharray:none}}
 /* Accessible, comfortably sized controls; wrap on narrow panes rather than shrinking. */
 .header-actions{gap:4px}.header-actions .subtle-button{width:34px;height:34px;min-width:34px}.header-actions .control-icon{width:19px;height:19px}.header-actions .pill{font-size:11px}.tabs{gap:22px}.tabs button{font-size:14px;min-height:42px;padding:10px 2px}.tabs button span{font-size:12px}.header-title{font-size:14px}.timeline button,.secondary-tools button{min-width:32px;min-height:32px;font-size:14px}.segmented button{font-size:12px;min-height:30px;padding:5px 12px}.member-line .subtle-button{font-size:12px;min-height:30px;padding:5px 8px}.board-tools button{min-height:32px;font-size:12px}@media(max-width:520px){header{flex-wrap:wrap}.header-title{flex:1 1 100%}.header-actions{margin-left:auto}.tabs{gap:16px}.tabs button{font-size:13px}.header-actions .subtle-button{width:36px;height:36px}}
+/* Both graph modes share a fixed viewport and stable replay message area. */
+.graph-view .graph-canvas{height:clamp(205px,34vh,324px);min-height:0;max-width:none;margin:8px 0 0;overflow:auto;display:flex;align-items:center;justify-content:safe center;overscroll-behavior:contain}
+.graph-view .graph{width:calc(100% * var(--graph-zoom,1));height:calc(100% * var(--graph-zoom,1));flex-shrink:0;max-height:none;max-width:none;overflow:visible}
+.graph-view .graph-shell.expanded .graph-canvas{height:clamp(240px,48vh,460px)}
+.graph-view .legend{min-height:18px;margin:4px 0;gap:10px;line-height:1.3;font-size:10px}
+.graph-view .graph-note{display:block;line-height:1.4;margin-bottom:6px}
+.graph-view .replay-post{height:120px;overflow:auto;overscroll-behavior:contain;margin:8px 0 0;padding:10px 12px;border:1px solid #262629;background:#151517;scrollbar-gutter:stable}
+.graph-view .replay-post .post-meta{position:sticky;top:-10px;z-index:1;background:#151517;padding:3px 0 5px}
+.graph-view .replay-post .text{margin-top:2px}
+.graph-view .retired-bee{opacity:.86}
+.graph-view .inactive-node{opacity:.78}
+.graph-view .hive-cell{transition:fill .28s ease,stroke .28s ease,opacity .2s ease}
+.graph-view .node{transition:opacity .24s ease;filter:none}
+.graph-view .node:hover,.graph-view .node:focus-visible{filter:brightness(1.16)}
+.graph-view .mention-edge>path{transition:stroke .25s ease,opacity .25s ease,stroke-width .25s ease}
+.graph-view .message-trail{animation:trail-flow 1.4s linear infinite;stroke-linecap:round}
+@keyframes trail-flow{to{stroke-dashoffset:-32}}
+.bee-icon.flying .bee-wing.near{animation:wing-flap-soft .24s cubic-bezier(.45,0,.55,1) infinite alternate}
+.bee-icon.flying .bee-wing.far{animation:wing-flap-soft .24s cubic-bezier(.45,0,.55,1) infinite alternate-reverse}
+.bee-icon.flying .bee-flight{animation:bee-hover-soft 2.4s ease-in-out infinite}
+.bee-icon.dozing .sleep-z{animation:sleep-rise 3.6s ease-in-out infinite}
+@keyframes wing-flap-soft{from{transform:rotate(-9deg) scaleY(1)}to{transform:rotate(24deg) scaleY(.60)}}
+@keyframes bee-hover-soft{0%,100%{transform:translateY(0) rotate(-.5deg)}50%{transform:translateY(-2px) rotate(.5deg)}}
+@media(max-width:520px){.graph-view .graph-canvas{height:clamp(170px,29vh,260px)}.graph-view .replay-post{height:104px}.graph-view .legend{font-size:9px}}
+@media(prefers-reduced-motion:reduce){.graph-view .hive-cell,.graph-view .node,.graph-view .mention-edge>path{transition:none}.graph-view .message-trail,.bee-icon .bee-wing,.bee-icon .bee-flight,.bee-icon .sleep-z{animation:none!important}}
+.graph-view .mention-edge{animation:edge-appear .22s ease-out both}@keyframes edge-appear{from{opacity:0}to{opacity:1}}
+@media(prefers-reduced-motion:reduce){.graph-view .mention-edge{animation:none}}

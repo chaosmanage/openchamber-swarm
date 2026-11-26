@@ -1578,6 +1578,59 @@
   // node_modules/@openchamber/sdk/dist/service-surface.js
   var SURFACE_CONTROLLERS = ["none", "agent", "user"];
   var CONTROLLERS = new Set(SURFACE_CONTROLLERS);
+  // src/graph-layout.js
+  var VIEW = [0, 0, 640, 324];
+  var CELLS = [[0, 0], [-1, 0], [1, -1], [-1, 1], [1, 0], [0, -1], [0, 1], [-2, 1], [2, -1], [-2, 0], [2, -2], [-1, -1], [1, 1]];
+  function layoutGraph(roster, hive) {
+    const positions = new Map, r = roster.length <= 7 ? 53 : 43;
+    if (hive) {
+      const ordered = [roster.find((m) => m.role === "coordinator"), ...roster.filter((m) => m.role !== "coordinator" && m.role !== "monitor"), roster.find((m) => m.role === "monitor")].filter(Boolean);
+      ordered.forEach((m, i) => {
+        const [q, z] = CELLS[i];
+        positions.set(m.name, [320 + 1.5 * r * q, 162 + Math.sqrt(3) * r * (z + q / 2)]);
+      });
+    } else {
+      const workers = roster.filter((m) => m.role !== "coordinator" && m.role !== "monitor"), left = workers.filter((_, i) => i % 2 === 0), right = workers.filter((_, i) => i % 2 === 1);
+      for (const m of roster) {
+        if (m.role === "coordinator")
+          positions.set(m.name, [320, 28]);
+        if (m.role === "monitor")
+          positions.set(m.name, [320, 296]);
+      }
+      for (const [group, x] of [[left, 82], [right, 558]])
+        group.forEach((m, i) => {
+          positions.set(m.name, [x, group.length === 1 ? 162 : 162 - (group.length - 1) * Math.min(108, 216 / (group.length - 1)) / 2 + i * Math.min(108, 216 / (group.length - 1))]);
+        });
+    }
+    return { positions, r };
+  }
+  function collectEdges(posts, visible) {
+    const pairs = new Map;
+    for (const p of posts)
+      for (const to of p.to) {
+        if (p.from === to || !visible.has(p.from) || !visible.has(to))
+          continue;
+        const [a, b] = [p.from, to].sort(), key = JSON.stringify([a, b]);
+        let e = pairs.get(key);
+        if (!e) {
+          e = { a, b, ab: 0, ba: 0 };
+          pairs.set(key, e);
+        }
+        e[p.from === a ? "ab" : "ba"]++;
+      }
+    return [...pairs.values()];
+  }
+  function edgeGeometry(from, to, halfWidth = 68, halfHeight = 16) {
+    const [x, y] = from, [u, v] = to, dx = u - x, dy = v - y;
+    if (dx === 0 && halfWidth >= 64) {
+      const side = x < 320 ? 1 : -1, sign = Math.sign(dy) || 1, sx = x + side * halfWidth, sy = y + sign * 5, tx = u + side * halfWidth, ty = v - sign * 5, bend = sx + side * Math.min(80, 26 + Math.abs(dy) * 0.15);
+      return { path: "M" + sx + " " + sy + " C" + bend + " " + sy + " " + bend + " " + ty + " " + tx + " " + ty, x: (sx + bend) * 0.5, y: (sy + ty) * 0.5 };
+    }
+    const offset = Math.min(halfWidth / (Math.abs(dx) || 0.000000001), halfHeight / (Math.abs(dy) || 0.000000001), 0.4);
+    const sx = x + dx * offset, sy = y + dy * offset, tx = u - dx * offset, ty = v - dy * offset;
+    return { path: "M" + sx + " " + sy + " L" + tx + " " + ty, x: (sx + tx) / 2, y: (sy + ty) / 2 };
+  }
+
   // src/panel.js
   var host = connectHost();
   var root = document.getElementById("app");
@@ -1648,7 +1701,7 @@
       const next = await api("/list", null, { directory: directory || "", sessionId: session?.id || "" });
       if (JSON.stringify(next) === JSON.stringify(swarms) && !error)
         return;
-      const newSwarm = next.find((s) => !swarms.some((old) => old.id === s.id));
+      const previous = current(), newSwarm = next.find((s) => !swarms.some((old) => old.id === s.id));
       swarms = next;
       if (newSwarm)
         selected = newSwarm.id;
@@ -1662,7 +1715,17 @@
       if (!swarms.some((s) => s.id === selected))
         selected = swarms[0]?.id || "";
       error = "";
-      render();
+      const updated = current();
+      if (tab === "Graph" && previous && updated && previous.id === updated.id && previous.title === updated.title && previous.status === updated.status && previous.members.map((m) => m.name).join("|") === updated.members.map((m) => m.name).join("|") && !settingsOpen && !deleteConfirm && !stopConfirm && !newFormOpen && root.querySelector(".graph-view")) {
+        const badge = root.querySelector("[data-tab=Board] span");
+        if (badge)
+          badge.textContent = updated.posts.length;
+        const memberBadge = root.querySelector("[data-tab=Members] span");
+        if (memberBadge)
+          memberBadge.textContent = updated.members.filter((m) => m.state !== "retired").length;
+        replayFrame();
+      } else
+        render();
     } catch (e) {
       error = e.message;
       render();
@@ -1729,67 +1792,120 @@
     };
     const all = [...s.members.map(historic), { name: "monitor", role: "monitor", state: s.status === "running" ? s.monitor?.bridgeConnected ? "active" : "waiting" : "retired", brief: "Supervises stalls and wakes members." }];
     const nodes = all.filter((m) => (replay === null || m.role === "monitor" || m.role === "coordinator" || !(s.history || []).length || (s.history || []).some((h) => h.name === m.name && h.post <= count)) && (!hideInactive || !["waiting", "retired"].includes(m.state) || m.role === "coordinator"));
-    const pos = new Map, isHive = mode === "Hive", n = nodes.length, hexR = n > 8 ? 66 : 88;
-    const cells = [[0, 0], [-1, 0], [1, -1], [-1, 1], [1, 0], [0, -1], [0, 1], [-2, 1], [2, -1], [-2, 0], [2, -2], [-1, -1], [1, 1]];
-    const W = 700, H = isHive ? Math.max(360, n > 7 ? 520 : 390) : 340;
-    nodes.forEach((m, i) => {
-      if (isHive) {
-        const [q, r] = cells[i] || [i - 6, 0];
-        pos.set(m.name, [W / 2 + 1.5 * hexR * q, H / 2 + Math.sqrt(3) * hexR * (r + q / 2)]);
-      } else {
-        const a = Math.PI * (0.1 + 0.8 * (i - 1) / Math.max(1, n - 2));
-        pos.set(m.name, i === 0 ? [W / 2, 40] : [W / 2 + 272 * Math.cos(a), 65 + 225 * Math.sin(a)]);
-      }
-    });
-    const edges = new Map;
-    for (const p of posts) {
-      if (!pos.has(p.from))
-        continue;
-      for (const to of p.to)
-        if (pos.has(to) && to !== p.from) {
-          let k = p.from + "|" + to;
-          edges.set(k, (edges.get(k) || 0) + 1);
-        }
-    }
+    const isHive = mode === "Hive", { positions: pos, r: hexR } = layoutGraph(all, isHive), view = VIEW, visible = new Set(nodes.map((m) => m.name));
+    const edges = collectEdges(posts, visible);
     const hex = (r) => Array.from({ length: 6 }, (_, i) => {
       const a = i * Math.PI / 3;
       return [Math.cos(a) * r, Math.sin(a) * r].join(",");
     }).join(" ");
-    const latest = last ? new Set(last.to.map((t) => last.from + "|" + t)) : new Set;
     const doneAt = (m) => posts.some((p) => p.from === m.name && ["done", "verified"].includes(p.kind));
-    const done = nodes.filter((m) => m.role !== "monitor" && m.role !== "coordinator" && doneAt(m)).length, total = s.members.filter((m) => m.role !== "coordinator").length;
-    let drawing = '<defs><marker id="arr" markerWidth="7" markerHeight="7" refX="6" refY="3" orient="auto"><path d="M0 0 6 3 0 6" fill="#626262"/></marker><marker id="hot" markerWidth="7" markerHeight="7" refX="6" refY="3" orient="auto"><path d="M0 0 6 3 0 6" fill="#6999db"/></marker></defs>';
-    if (isHive)
-      for (const m of nodes) {
-        const [x, y] = pos.get(m.name), finished = m.role === "coordinator" ? done === total && total > 0 : doneAt(m);
-        drawing += '<polygon transform="translate(' + x + " " + y + ')" points="' + hex(hexR - 3) + '" fill="' + (finished ? "#1b2119" : m.role === "coordinator" ? "#211c14" : m.state === "blocked" ? "#24191b" : "#151517") + '" stroke="' + (finished ? "#79a66b" : m.role === "coordinator" ? "#6f5530" : m.state === "blocked" ? "#76474b" : "#343436") + '" stroke-width="' + (finished ? 2.5 : 1) + '"/>';
-      }
-    for (const [k, weight] of edges) {
-      const [a, b] = k.split("|"), [x, y] = pos.get(a), [u, v] = pos.get(b), hot = latest.has(k);
+    const done = all.filter((m) => m.role !== "monitor" && m.role !== "coordinator" && doneAt(m)).length, total = s.members.filter((m) => m.role !== "coordinator").length;
+    let drawing = '<defs><marker id="arr" markerUnits="userSpaceOnUse" markerWidth="7" markerHeight="7" refX="6" refY="3" orient="auto-start-reverse"><path d="M0 0 6 3 0 6" fill="#777980"/></marker><marker id="hot" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto-start-reverse"><path d="M0 0 7 3 0 6" fill="#83a9eb"/></marker></defs>';
+    for (const m of all) {
+      if (!isHive)
+        break;
+      const [x, y] = pos.get(m.name), finished = m.role === "coordinator" ? done === total && total > 0 : doneAt(m);
+      drawing += '<polygon data-key="cell-' + esc(m.name) + '" class="hive-cell" opacity="' + (visible.has(m.name) ? 1 : 0) + '" transform="translate(' + x + " " + y + ')" points="' + hex(hexR - 2) + '" fill="' + (finished ? "#20291e" : m.role === "coordinator" ? "#282118" : m.state === "blocked" ? "#2a1e20" : "#171719") + '" stroke="' + (finished ? "#7da36e" : m.role === "coordinator" ? "#876940" : m.state === "blocked" ? "#9a6065" : "#39393d") + '" stroke-width="' + (finished ? 1.8 : 1) + '"/>';
+    }
+    for (const e of edges) {
+      const { a, b, ab, ba } = e, hotAB = last?.from === a && last.to.includes(b), hotBA = last?.from === b && last.to.includes(a), hot = hotAB || hotBA, focus = graphMember === a || graphMember === b;
       if (isHive && !hot)
         continue;
-      const d = Math.hypot(u - x, v - y) || 1, dx = (u - x) / d, dy = (v - y) / d, r = isHive ? 20 : Math.min(65, Math.abs(dx) * 54 + Math.abs(dy) * 12), ex = x + dx * r, ey = y + dy * r, tx = u - dx * r, ty = v - dy * r, qx = (x + u) / 2 - (v - y) * 0.12, qy = (y + v) / 2 + (u - x) * 0.12;
-      drawing += '<path class="' + (hot && replay === null ? "recent-edge" : "") + '" d="M' + ex + " " + ey + " Q" + qx + " " + qy + " " + tx + " " + ty + '" fill="none" stroke="' + (hot ? "#6999db" : "#555557") + '" stroke-width="' + (isHive ? 1.6 : Math.min(5, 1 + weight * 0.65)) + '" marker-end="url(#' + (hot ? "hot" : "arr") + ')"/>';
-      if (!isHive)
-        drawing += '<text x="' + qx + '" y="' + (qy - 5) + '" text-anchor="middle" fill="#a5a5a7" font-size="11">' + weight + "</text>";
+      const g = edgeGeometry(pos.get(a), pos.get(b), isHive ? 20 : 68, isHive ? 18 : 16), width = isHive ? 1.6 : Math.min(2.2, 1 + (ab + ba) * 0.15), color = hot ? "#83a9eb" : focus ? "#a5a7ad" : "#55585e", showAB = isHive ? hotAB : ab > 0, showBA = isHive ? hotBA : ba > 0;
+      drawing += '<g data-key="edge-' + esc(a) + "-" + esc(b) + '" class="mention-edge"><title>@' + esc(a) + " → @" + esc(b) + ": " + ab + " · reverse: " + ba + '</title><path d="' + g.path + '" fill="none" stroke="' + color + '" stroke-width="' + width + '" opacity="' + (hot || focus ? 1 : 0.65) + '" ' + (showAB ? 'marker-end="url(#' + (hot ? "hot" : "arr") + ')"' : "") + " " + (showBA ? 'marker-start="url(#' + (hot ? "hot" : "arr") + ')"' : "") + "/>" + (hot ? '<path class="message-trail" d="' + g.path + '" fill="none" stroke="#c1d9ff" stroke-width="1.6" stroke-dasharray="4 28" ' + (hotBA && !hotAB ? 'style="animation-direction:reverse"' : "") + "/>" : "") + (!isHive && (hot || focus) ? '<g class="edge-count" transform="translate(' + g.x + " " + (g.y - 7) + ')"><rect x="-18" y="-8" width="36" height="16" rx="5" fill="#1d2026"/><text text-anchor="middle" y="3" fill="#c7c9cd" font-size="9">' + (ab && ba ? ab + " / " + ba : ab + ba) + "</text></g>" : "") + "</g>";
     }
-    for (const m of nodes) {
-      const i = all.indexOf(m), [x, y] = pos.get(m.name), c = roleColor(m, i), active = m.state === "active" || m.state === "dispatching", finished = doneAt(m), label = short(m.name, 22), selected = graphMember === m.name;
-      drawing += '<g class="node ' + (m.state === "retired" ? "retired-node" : "") + '" role="button" tabindex="0" aria-label="Inspect ' + esc(m.name) + '" data-node="' + esc(m.name) + '" transform="translate(' + x + " " + y + ')"><title>@' + esc(m.name) + " · " + esc(m.state) + "</title>";
+    for (const m of all) {
+      const i = all.indexOf(m), [x, y] = pos.get(m.name), c = roleColor(m, i), active = (replay !== null || s.status === "running") && ["active", "dispatching"].includes(m.state), finished = doneAt(m), label = short(m.name, 16), selected = graphMember === m.name, shown = visible.has(m.name), displayBee = { ...m, state: active ? m.state : finished ? "resting" : m.state === "retired" ? "retired" : m.state === "blocked" ? "blocked" : m.state === "waiting" ? "waiting" : "resting" };
+      const stateLabel = m.role === "monitor" ? s.status === "running" ? s.monitor?.bridgeConnected ? "Watching" : "Waiting" : "Stopped" : finished ? "Done" : active ? "Working" : m.state === "blocked" ? "Blocked" : m.state === "retired" ? "Retired" : "Standby";
+      drawing += '<g data-key="node-' + esc(m.name) + '" class="node ' + (m.state === "retired" && !finished && s.status === "running" ? "inactive-node" : "") + '" role="button" tabindex="' + (shown ? 0 : -1) + '" visibility="' + (shown ? "visible" : "hidden") + '" aria-label="Inspect ' + esc(m.name) + '" data-node="' + esc(m.name) + '" transform="translate(' + x + " " + y + ')"><title>@' + esc(m.name) + " · " + stateLabel + "</title>";
       if (isHive) {
-        const title = m.role === "coordinator" ? "Coordinator" : m.role === "monitor" ? "Monitor" : short(m.name.replace(/-/g, " "), 22);
-        const words = title.split(" "), line1 = words.length > 2 ? words.slice(0, 2).join(" ") : title, line2 = words.length > 2 ? words.slice(2).join(" ") : "";
-        drawing += '<polygon points="' + hex(hexR - 3) + '" fill="transparent" stroke="' + (selected ? "#a6a6a6" : "transparent") + '" stroke-width="2"/><text y="-' + hexR * 0.57 + '" text-anchor="middle" fill="#e7e7e7" font-size="13" font-weight="600">' + esc(line1) + "</text>" + (line2 ? '<text y="-' + (hexR * 0.57 - 15) + '" text-anchor="middle" fill="#e7e7e7" font-size="13" font-weight="600">' + esc(line2) + "</text>" : "") + '<text y="-' + (hexR * 0.57 - (line2 ? 29 : 15)) + '" text-anchor="middle" fill="#909093" font-size="11">' + (m.role === "coordinator" ? done + " of " + total + " done" : m.role === "monitor" ? s.monitor?.bridgeConnected ? "Watching" : "Waiting" : finished ? "1/1" : "0/1") + '</text><g transform="translate(-32 0)">' + bee(m, i, true) + "</g>" + (active ? '<circle cx="26" cy="5" r="4" fill="#83b775" stroke="#151517"/>' : "");
+        const title = m.role === "coordinator" ? "Coordinator" : m.role === "monitor" ? "Monitor" : short(m.name.replace(/-/g, " "), 14);
+        drawing += '<polygon points="' + hex(hexR - 2) + '" fill="transparent" stroke="' + (selected ? "#c9d4e4" : "transparent") + '" stroke-width="1.5"/><text y="-20" text-anchor="middle" fill="#e3e3e5" font-size="11" font-weight="600">' + esc(title) + '</text><text y="-8" text-anchor="middle" fill="' + (finished ? "#a2c294" : "#9b9ba2") + '" font-size="9">' + (m.role === "coordinator" ? done + "/" + total + " done" : stateLabel) + '</text><g transform="translate(-21 -2) scale(.66)">' + bee(displayBee, i, true) + "</g>" + (active ? '<circle class="working-dot" cx="22" cy="15" r="2.8" fill="#9cc68b"/>' : "");
       } else {
-        const width = Math.max(112, 40 + label.length * 6.2);
-        drawing += '<rect x="' + -width / 2 + '" y="-14" width="' + width + '" height="28" rx="14" fill="#0b0b0b" stroke="' + (selected ? "#858588" : "#373739") + '"/><g transform="translate(' + (-width / 2 + 7) + ' -11) scale(.60)">' + bee(m, i) + '</g><text x="' + (-width / 2 + 34) + '" y="4" text-anchor="start" font-size="12" fill="#dedee0">' + esc(label) + "</text>" + (active ? '<circle cx="' + (-width / 2 + 30) + '" cy="-12" r="3.5" fill="#83b775"/>' : "");
+        drawing += '<rect x="-64" y="-13" width="128" height="26" rx="7" fill="#1b1b1e" stroke="' + (selected ? "#a7b9d2" : finished ? "#526a49" : "#393a3e") + '"/><g transform="translate(-58 -10) scale(.56)">' + bee(displayBee, i) + '</g><text x="-35" y="4" font-size="11" fill="#dedee0">' + esc(label) + '</text><circle cx="55" cy="0" r="2.8" fill="' + (finished ? "#8db57e" : active ? "#86b9ef" : m.state === "blocked" ? "#d98b84" : "#6e7077") + '"/>';
       }
       drawing += "</g>";
     }
     const detail = nodes.find((m) => m.name === graphMember);
-    const xs = [...pos.values()].map((p) => p[0]), ys = [...pos.values()].map((p) => p[1]), padX = isHive ? hexR + 12 : 95, padY = isHive ? hexR * 0.866 + 12 : 28;
-    const view = [Math.min(...xs) - padX, Math.min(...ys) - padY, Math.max(...xs) - Math.min(...xs) + 2 * padX, Math.max(...ys) - Math.min(...ys) + 2 * padY];
-    return '<section class="graph-shell ' + (graphExpanded ? "expanded" : "") + '"><div class="timeline"><button id="first" aria-label="First post">|‹</button><button id="prev" aria-label="Previous post">‹</button><button id="play" aria-label="Play or pause">' + (playing ? "Ⅱ" : "▶") + '</button><button id="next" aria-label="Next post">›</button><input id="replay" type="range" min="0" max="' + s.posts.length + '" value="' + count + '" aria-label="Replay timeline"><button id="live" class="' + (replay === null ? "live-button" : "") + '">● Live</button></div><div class="graph-tools"><span class="counter">' + count + " of " + s.posts.length + (last ? " · #" + last.id + " at " + fmt(last.at) : "") + '</span><div class="segmented"><button data-mode="Hive" class="' + (isHive ? "selected" : "") + '">Hive</button><button data-mode="Mentions" class="' + (!isHive ? "selected" : "") + '">Mentions</button></div></div><div class="graph-tools secondary-tools"><button id="hideInactive" aria-pressed="' + hideInactive + '" class="subtle-button"><span class="switch ' + (hideInactive ? "on" : "") + '"></span> Hide inactive</button><label>Speed <select id="pace"><option value=".5" ' + (pace === 0.5 ? "selected" : "") + '>0.5×</option><option value="1" ' + (pace === 1 ? "selected" : "") + '>1×</option><option value="2" ' + (pace === 2 ? "selected" : "") + '>2×</option></select></label><span class="push"></span><button id="minus" aria-label="Zoom out">−</button><button id="plus" aria-label="Zoom in"><svg class="control-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button><button id="zoom" aria-label="Expand">↗</button></div><div class="graph-canvas"><svg class="graph" style="width:' + Math.round(zoomLevel * 100) + '%" viewBox="' + view.join(" ") + '" aria-label="Swarm communication graph">' + drawing + '</svg></div><div class="legend">' + (isHive ? '<span><i class="line-key green"></i> Tasks done</span><span><i class="line-key blue"></i> Message just sent</span>' : '<span><i class="line-key gray"></i> Mention, width = count</span><span><i class="line-key blue"></i> Latest mention</span>') + '</div><small class="graph-note">Post history replay · recorded agent states</small></section>' + (last ? '<article class="replay-post"><div class="post-meta"><strong>' + esc(last.from) + '</strong><span class="post-target">→ ' + esc(last.to.map((x) => "@" + x).join(" ")) + '</span><span class="post-time">' + fmt(last.at) + '</span></div><div class="text"><span class="kind-chip ' + esc(last.kind) + '">[' + esc(last.kind) + "]</span> " + esc(last.text) + "</div></article>" : "") + (detail ? '<div class="card member-detail"><div class="row">' + avatar(detail, all.indexOf(detail)) + "<strong>@" + esc(detail.name) + "</strong> " + status(detail.state) + "</div><p>" + esc(detail.brief || "Supervises swarm activity") + "</p>" + (detail.sessionId ? '<button data-open="' + esc(detail.sessionId) + '">Open conversation</button>' : "") + "</div>" : "");
+    return '<div class="graph-view" data-swarm="' + esc(s.id) + '"><section class="graph-shell ' + (graphExpanded ? "expanded" : "") + '"><div class="timeline"><button id="first" aria-label="First post">|‹</button><button id="prev" aria-label="Previous post">‹</button><button id="play" aria-label="Play or pause">' + (playing ? "Ⅱ" : "▶") + '</button><button id="next" aria-label="Next post">›</button><input id="replay" type="range" min="0" max="' + s.posts.length + '" value="' + count + '" aria-label="Replay timeline"><button id="live" class="' + (replay === null ? "live-button" : "") + '">● Live</button></div><div class="graph-tools"><span class="counter">' + count + " of " + s.posts.length + (last ? " · #" + last.id + " at " + fmt(last.at) : "") + '</span><div class="segmented"><button data-mode="Hive" class="' + (isHive ? "selected" : "") + '">Hive</button><button data-mode="Mentions" class="' + (!isHive ? "selected" : "") + '">Mentions</button></div></div><div class="graph-tools secondary-tools"><button id="hideInactive" aria-pressed="' + hideInactive + '" class="subtle-button"><span class="switch ' + (hideInactive ? "on" : "") + '"></span> Hide inactive</button><label>Speed <select id="pace"><option value=".5" ' + (pace === 0.5 ? "selected" : "") + '>0.5×</option><option value="1" ' + (pace === 1 ? "selected" : "") + '>1×</option><option value="2" ' + (pace === 2 ? "selected" : "") + '>2×</option></select></label><span class="push"></span><button id="minus" aria-label="Zoom out">−</button><button id="plus" aria-label="Zoom in"><svg class="control-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button><button id="zoom" aria-label="Expand">↗</button></div><div class="graph-canvas"><svg class="graph" style="--graph-zoom:' + zoomLevel + '" viewBox="' + view.join(" ") + '" aria-label="Swarm communication graph">' + drawing + '</svg></div><div class="legend">' + (isHive ? '<span><i class="line-key green"></i> Tasks done</span><span><i class="line-key blue"></i> Message just sent</span>' : '<span><i class="line-key gray"></i> Connection · arrows show direction</span><span><i class="line-key blue"></i> Latest mention · select for counts</span>') + '</div><small class="graph-note">Post history replay · recorded agent states</small>' + (last ? '<article class="replay-post"><div class="post-meta"><strong>' + esc(last.from) + '</strong><span class="post-target">→ ' + esc(last.to.map((x) => "@" + x).join(" ")) + '</span><span class="post-time">' + fmt(last.at) + '</span></div><div class="text"><span class="kind-chip ' + esc(last.kind) + '">[' + esc(last.kind) + "]</span> " + esc(last.text) + "</div></article>" : '<article class="replay-post"><div class="post-meta"><strong>Board message</strong></div><div class="text muted">Before the first post</div></article>') + "</section>" + (detail ? '<div class="card member-detail"><div class="row">' + avatar(detail, all.indexOf(detail)) + "<strong>@" + esc(detail.name) + "</strong> " + status(detail.state) + "</div><p>" + esc(detail.brief || "Supervises swarm activity") + "</p>" + (detail.sessionId ? '<button data-open="' + esc(detail.sessionId) + '">Open conversation</button>' : "") + "</div>" : "") + "</div>";
+  }
+  function patchGraphElement(old, next) {
+    if (!old || !next || old.nodeType !== next.nodeType || old.nodeName !== next.nodeName) {
+      old?.replaceWith(next.cloneNode(true));
+      return;
+    }
+    if (old.nodeType === 3 || old.nodeType === 8) {
+      if (old.nodeValue !== next.nodeValue)
+        old.nodeValue = next.nodeValue;
+      return;
+    }
+    for (const a of [...old.attributes])
+      if (!next.hasAttribute(a.name))
+        old.removeAttribute(a.name);
+    for (const a of [...next.attributes])
+      if (old.getAttribute(a.name) !== a.value)
+        old.setAttribute(a.name, a.value);
+    if (old.tagName === "INPUT") {
+      old.value = next.value;
+      return;
+    }
+    if (old.tagName === "SELECT") {
+      old.value = next.value;
+      return;
+    }
+    const keyed = new Map([...old.children].filter((x) => x.hasAttribute("data-key")).map((x) => [x.getAttribute("data-key"), x]));
+    if (keyed.size || [...next.children].some((x) => x.hasAttribute("data-key"))) {
+      const wanted = new Set([...next.children].filter((x) => x.hasAttribute("data-key")).map((x) => x.getAttribute("data-key")));
+      for (const [key, node] of keyed) {
+        if (!wanted.has(key)) {
+          node.remove();
+          keyed.delete(key);
+        }
+      }
+      let cursor = old.firstChild;
+      for (const child of [...next.childNodes]) {
+        const key = child.nodeType === 1 && child.getAttribute("data-key");
+        let node = key ? keyed.get(key) : cursor && !cursor.getAttribute?.("data-key") ? cursor : null;
+        if (!node) {
+          node = child.cloneNode(true);
+          old.insertBefore(node, cursor);
+        } else {
+          if (node !== cursor)
+            old.insertBefore(node, cursor);
+          patchGraphElement(node, child);
+        }
+        cursor = node.nextSibling;
+      }
+      while (cursor) {
+        const nextSibling = cursor.nextSibling;
+        cursor.remove();
+        cursor = nextSibling;
+      }
+    } else {
+      const a = [...old.childNodes], b = [...next.childNodes];
+      for (let i = 0;i < b.length; i++) {
+        if (a[i])
+          patchGraphElement(a[i], b[i]);
+        else
+          old.append(b[i].cloneNode(true));
+      }
+      for (let i = b.length;i < a.length; i++)
+        a[i].remove();
+    }
+  }
+  function replayFrame() {
+    const s = current(), old = root.querySelector(".graph-view");
+    if (!s || !old || old.dataset.swarm !== s.id) {
+      render();
+      return;
+    }
+    const temp = document.createElement("template");
+    temp.innerHTML = graph(s);
+    patchGraphElement(old, temp.content.firstElementChild);
+    old.querySelectorAll("[data-open]").forEach((el) => el.onclick = () => host.openSession(el.dataset.open).catch((e) => {
+      error = e.message;
+      render();
+    }));
   }
   function render() {
     const settingsDraft = root.querySelector("#swarmSettings") ? Object.fromEntries(new FormData(root.querySelector("#swarmSettings"))) : null;
@@ -1880,7 +1996,10 @@
         root.querySelector("#start textarea").focus();
     });
     root.querySelector("#swarmSelect")?.addEventListener("change", (e) => {
+      clearInterval(timer);
+      playing = false;
       selected = e.target.value;
+      graphMember = "";
       replay = null;
       deleteConfirm = false;
       stopConfirm = false;
@@ -1915,6 +2034,8 @@
       render();
     });
     root.querySelectorAll("[data-tab]").forEach((el) => el.onclick = () => {
+      clearInterval(timer);
+      playing = false;
       tab = el.dataset.tab;
       graphExpanded = false;
       render();
@@ -1925,7 +2046,7 @@
     });
     root.querySelectorAll("[data-node]").forEach((el) => {
       el.onclick = () => {
-        graphMember = el.dataset.node;
+        graphMember = graphMember === el.dataset.node ? "" : el.dataset.node;
         render();
       };
       el.onkeydown = (e) => {
@@ -1953,7 +2074,7 @@
     });
     root.querySelector("#first")?.addEventListener("click", () => {
       replay = 0;
-      render();
+      replayFrame();
     });
     root.querySelector("#pace")?.addEventListener("change", (e) => {
       pace = Number(e.target.value);
@@ -2008,35 +2129,35 @@
       await action("/message", body);
     });
     root.querySelector("#prev")?.addEventListener("click", () => {
-      replay = Math.max(0, (replay ?? s.posts.length) - 1);
-      render();
+      replay = Math.max(0, (replay ?? current().posts.length) - 1);
+      replayFrame();
     });
     root.querySelector("#next")?.addEventListener("click", () => {
-      replay = Math.min(s.posts.length, (replay ?? s.posts.length) + 1);
-      render();
+      replay = Math.min(current().posts.length, (replay ?? current().posts.length) + 1);
+      replayFrame();
     });
     root.querySelector("#replay")?.addEventListener("input", (e) => {
+      clearInterval(timer);
+      playing = false;
       replay = Number(e.target.value);
-      const c = root.querySelector(".counter");
-      if (c)
-        c.textContent = replay + " of " + s.posts.length;
+      replayFrame();
     });
     root.querySelector("#replay")?.addEventListener("change", () => {
       clearInterval(timer);
       playing = false;
-      render();
+      replayFrame();
     });
     root.querySelector("#live")?.addEventListener("click", () => {
       clearInterval(timer);
       playing = false;
       replay = null;
-      render();
+      replayFrame();
     });
     root.querySelector("#play")?.addEventListener("click", () => {
       if (playing) {
         clearInterval(timer);
         playing = false;
-        render();
+        replayFrame();
         return;
       }
       playing = true;
@@ -2048,9 +2169,9 @@
           playing = false;
         } else
           replay++;
-        render();
-      }, 650 / pace);
-      render();
+        replayFrame();
+      }, 800 / pace);
+      replayFrame();
     });
   }
   function selectItem(item) {
