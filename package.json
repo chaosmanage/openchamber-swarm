@@ -1,0 +1,76 @@
+{
+  "name": "openchamber-swarm",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Collaborative multi-agent swarm for OpenChamber and OpenCode",
+  "scripts": {
+    "build": "bun build src/panel.js --target=browser --format=iife --outfile=panel/main.js && bun build src/service.js --target=node --outfile=service/main.js",
+    "test": "node --test tests/*.test.js"
+  },
+  "dependencies": {
+    "@openchamber/sdk": "2.8.0"
+  },
+  "openchamber": {
+    "apiVersion": 1,
+    "engines": {
+      "openchamber": ">=2.8.0"
+    },
+    "id": "oc-swarm",
+    "name": "Swarm",
+    "icon": "icon.svg",
+    "contributes": {
+      "panel": {
+        "entry": "panel/index.html",
+        "mobile": true
+      },
+      "page": true,
+      "attach": "panel",
+      "capabilities": [
+        "sessions"
+      ],
+      "service": {
+        "entry": "service/main.js",
+        "runtime": "host",
+        "keepRunning": true
+      },
+      "sessionControl": {
+        "content": true
+      },
+      "sessionEvents": {
+        "events": [
+          "turn-finished",
+          "turn-failed",
+          "permission-asked",
+          "question-asked"
+        ],
+        "content": true
+      },
+      "skills": "skills",
+      "opencodePlugin": "plugin",
+      "marks": true,
+      "links": {
+        "action": "open",
+        "identifier": {
+          "keys": [
+            "SWARM"
+          ]
+        }
+      },
+      "tools": [
+        {
+          "match": "swarm_*",
+          "name": "Swarm",
+          "icon": "icon.svg",
+          "output": "text"
+        }
+      ],
+      "commands": [
+        {
+          "name": "swarm",
+          "description": "Start a collaborative swarm for a task"
+        }
+      ]
+    }
+  }
+}
