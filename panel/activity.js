@@ -1578,6 +1578,25 @@
   // node_modules/@openchamber/sdk/dist/service-surface.js
   var SURFACE_CONTROLLERS = ["none", "agent", "user"];
   var CONTROLLERS = new Set(SURFACE_CONTROLLERS);
+  // src/graph-layout.js
+  function memberCue(member) {
+    if (member.state === "blocked")
+      return { label: "Needs attention", symbol: "!" };
+    if (member.state === "retired")
+      return { label: "Retired", symbol: "−" };
+    if (member.taskState === "verified")
+      return { label: "Verified", symbol: "✓" };
+    if (member.taskState === "reported")
+      return { label: "Reported", symbol: "✓" };
+    if (member.state === "waiting")
+      return { label: "Standing by", symbol: "Ⅱ" };
+    if (member.state === "dispatching")
+      return { label: "Waking", symbol: "◌" };
+    if (member.state === "active")
+      return { label: "Working", symbol: "●" };
+    return { label: "Standing by", symbol: "Ⅱ" };
+  }
+
   // src/activity.js
   var host = connectHost();
   var root = document.getElementById("activity");
@@ -1590,7 +1609,10 @@
   var bee = (color = "#deb56b", active = false) => '<svg viewBox="0 0 24 24" class="' + (active ? "flying" : "") + '" fill="none" aria-hidden="true"><g class="wing" stroke="#9baec9" stroke-width="1.4"><path d="M10 10C3 10 2 4 6 3c3-.5 5 4 6 7M14 10c7 0 8-6 4-7-3-.5-5 4-6 7"/></g><path fill="' + color + '" stroke="#6e6252" d="M12 8c-3.3 0-5 3-5 6s2.5 5.5 5 7c2.5-1.5 5-4 5-7s-1.7-6-5-6Z"/><path stroke="#302b2c" stroke-width="2" d="M7.5 12.5h9M8.5 16.5h7"/></svg>';
   function render() {
     const members = data?.members || [], workers = members.filter((m) => m.role !== "coordinator"), working = workers.filter((m) => ["active", "dispatching"].includes(m.state)).length, done = workers.filter((m) => ["reported", "verified"].includes(m.taskState)).length;
-    root.innerHTML = '<section class="activity-card"><div class="head"><div class="head-title">' + bee() + '<span>Swarm</span></div><button class="open" id="open">Open Swarm ↗</button></div><div class="summary">' + (data ? "<span>" + working + " working</span><span>·</span><span>" + done + "/" + workers.length + " reported</span><span>·</span><span>" + data.posts.length + " posts</span>" : "Connecting…") + "</div>" + (error ? '<div class="error">' + esc(error) + "</div>" : "") + (members.length ? members.map((m) => '<button class="agent" data-session="' + esc(m.sessionId || "") + '" ' + (!m.sessionId ? "disabled" : "") + ">" + bee(m.role === "coordinator" ? "#e8bd65" : m.role === "verifier" ? "#94b1e9" : "#c3a0df", ["active", "dispatching"].includes(m.state)) + '<span class="agent-info"><span class="agent-name">@' + esc(m.name) + '</span><div class="sub">' + esc(m.brief?.slice(0, 90) || m.role) + '</div></span><span class="agent-state ' + esc(m.state) + '">' + esc({ active: "Working", dispatching: "Waking", waiting: "Standing by", blocked: "Needs attention", retired: "Retired" }[m.state] || m.state) + "</span></button>").join("") : '<div class="empty">Waiting for members</div>') + "</section>";
+    root.innerHTML = '<section class="activity-card"><div class="head"><div class="head-title">' + bee() + '<span>Swarm</span></div><button class="open" id="open">Open Swarm ↗</button></div><div class="summary">' + (data ? "<span>" + working + " working</span><span>·</span><span>" + done + "/" + workers.length + " reported</span><span>·</span><span>" + data.posts.length + " posts</span>" : "Connecting…") + "</div>" + (error ? '<div class="error">' + esc(error) + "</div>" : "") + (members.length ? members.map((m) => {
+      const cue = memberCue(m);
+      return '<button class="agent" data-session="' + esc(m.sessionId || "") + '" ' + (!m.sessionId ? "disabled" : "") + ">" + bee(m.role === "coordinator" ? "#e8bd65" : m.role === "verifier" ? "#94b1e9" : "#c3a0df", ["active", "dispatching"].includes(m.state)) + '<span class="agent-info"><span class="agent-name">@' + esc(m.name) + '</span><span class="sub">' + esc(m.brief?.slice(0, 90) || m.role) + '</span></span><span class="agent-state ' + esc(m.state) + (cue.label === "Verified" ? " verified" : "") + '"><span aria-hidden="true">' + esc(cue.symbol) + " </span>" + esc(cue.label) + "</span></button>";
+    }).join("") : '<div class="empty">Waiting for members</div>') + "</section>";
     root.querySelector("#open").onclick = () => host.openSurface("plugin:oc-swarm").catch((e) => {
       error = e.message;
       render();

@@ -46,7 +46,9 @@ export default {id:'oc-swarm-tools',async setup(ctx){
  await ctx.command.transform(commands=>commands.add({name:'swarm',description:'Start a collaborative swarm using the selected model',async execute({sessionID,prompt}){
   const task=String(prompt.text||'').trim();if(!task)throw Error('Usage: /swarm <task and acceptance criteria>');
   const info=await ctx.session.get({sessionID});if(!info?.model?.providerID||!info.model.id)throw Error('Choose a model in the chat before starting a swarm.');
-  const swarm=await request('start',{task,sessionId:sessionID,directory:ctx.location.directory,model:info.model.providerID+'/'+info.model.id,modelRef:info.model},AbortSignal.timeout(10000));
+  let swarm;try{swarm=await request('start',{task,sessionId:sessionID,directory:ctx.location.directory,model:info.model.providerID+'/'+info.model.id,modelRef:info.model},AbortSignal.timeout(10000));}
+  catch(e){if(e.name==='TimeoutError'||e.name==='AbortError'||e instanceof TypeError||e instanceof SyntaxError)throw Error('Swarm launch could not be confirmed. Check the Swarm panel or retry the same /swarm command in this conversation. '+String(e.message||e));throw e;}
+  if(swarm.alreadyStarted)return; // A repeated command recovers a lost start acknowledgement without starting another turn or renaming the chat.
   await ctx.session.update({sessionID,title:swarm.title});
   // Native slash commands have no first user prompt for the standard title generator.
   // Generate a short title without delaying the coordinator or adding a chat message.

@@ -29,13 +29,27 @@ const stableId=(prefix,value)=>prefix+createHash('sha256').update(value).digest(
 function modelRef(value){if(value&&typeof value==='object'&&value.providerID&&value.id)return value;const [providerID,...id]=String(value||'').split('/');return providerID&&id.join('/')?{providerID,id:id.join('/')}:undefined;}
 const modelName=r=>r?.providerID&&r?.id?r.providerID+'/'+r.id:'';
 
-for(const s of state.swarms){s.monitor??={checks:0,lastCheck:0,nextCheck:0,action:'Starting',lastAction:0};s.history??=[];s.workerModel??='';s.verifierModel??='';s.coordinatorModel??='';s.monitorModel??='';s.monitorReasoning??=false;s.launchModel??=s.members[0].model||'';for(const m of s.members){m.acked??=[];m.seeded??=!!(m.initialized&&(m.lastPost||m.lastReply||m.state!=='blocked'));if(m.state==='dispatching'){m.state='waiting';m.error='Recovering interrupted dispatch';}recordState(s,m,'startup');}}
+const seedUncertain='Initial prompt delivery is uncertain. Inspect the conversation, then use Retry; it reuses the same message ID. If the prompt was cancelled or removed, Retry may start a new turn.';
+for(const s of state.swarms){
+ s.monitor??={checks:0,lastCheck:0,nextCheck:0,action:'Starting',lastAction:0};s.history??=[];s.workerModel??='';s.verifierModel??='';s.coordinatorModel??='';s.monitorModel??='';s.monitorReasoning??=false;s.launchModel??=s.members[0].model||'';
+ // Older swarms queued the launch brief as a second delivery. Only the first,
+ // original user brief is special; later posts, even identical ones, are not.
+ const first=s.posts[0];if(!s.launchPostId&&first?.id===1&&first.from==='user'&&first.kind==='brief'&&first.to.includes('coordinator')&&first.text===s.task)s.launchPostId=first.id;
+ for(const m of s.members){
+  m.acked??=[];m.seeded??=!!m.initialized;
+  if(m.role==='coordinator'&&s.launchPostId){m.queue=m.queue.filter(id=>id!==s.launchPostId);m.acked=[...new Set([...m.acked,s.launchPostId])];if(!m.seeded)m.launchPending=true;}
+  if(m.state==='dispatching'&&!m.seeded)m.seedPending=true; // Legacy interrupted dispatch: admission may already have happened.
+  if(m.seedPending&&!m.seeded&&m.state!=='retired'){m.state='blocked';m.error=seedUncertain;}
+  else if(m.state==='dispatching'){m.state='waiting';m.error='Recovering interrupted dispatch';}
+  recordState(s,m,'startup');
+ }
+}
 persist();
 function mark(s,m){if(m.sessionId)host.setMark({sessionId:m.sessionId},{icon:'group',tone:m.state==='blocked'?'warning':s.status==='done'?'success':'info',text:s.key+' @'+m.name+' · '+m.state}).catch(()=>{});}
 function schedule(){setTimeout(()=>pump().catch(console.error),20);}
 async function pump(){
  for(const s of state.swarms){if(s.status!=='running')continue;
- for(const m of s.members){const k=s.id+':'+m.name;if(inFlight.has(k)||m.state!=='waiting'||!m.queue.length||Date.now()<(m.retryAt||0))continue;
+ for(const m of s.members){const k=s.id+':'+m.name;if(inFlight.has(k)||m.state!=='waiting'||(!m.queue.length&&!((m.launchPending||m.seedPending)&&!m.seeded))||Date.now()<(m.retryAt||0))continue;
  if(!plugins.has(normalizeDir(s.directory))||Date.now()-plugins.get(normalizeDir(s.directory))>15000){m.error='Waiting for OpenCode project bridge';continue;}
  if(s.turns>=MAX_TURNS){s.status='paused';s.summary='Turn budget exhausted; review before resuming.';persist(s);break;}
  inFlight.add(k);const ids=m.queue.slice();m.state='dispatching';m.dispatchAt=Date.now();m.dispatchSeq??=0;const dispatchSeq=m.dispatchSeq;if(m.initialized&&m.queue.length&&m.lastWakeIds===ids.join(',')){m.missedWake=(m.missedWake||0)+1;if(m.missedWake>=3){m.state='blocked';m.error='Board delivery not acknowledged; inspect model context and retry.';persist(s);inFlight.delete(k);continue;}}m.lastWakeIds=ids.join(',');persist(s);
@@ -51,17 +65,20 @@ async function pump(){
  if(s.status!=='running'||m.state==='retired')return;
  const notice='Swarm board update. Your assignment and addressed board posts are provided automatically in internal context. Use swarm_read only for additional history. End your turn when waiting.';
  if(!m.seeded){
+  // Record intent before crossing the bridge. OpenCode deduplicates a pending
+  // or delivered prompt by ID, so an explicit retry must reuse this exact ID.
+  m.seedPending=true;persist(s);
   await native('seed',{sessionID:m.sessionId,id:stableId('msg_',s.id+':'+m.name+':seed'),text:m.role==='coordinator'?s.task:'Start your '+m.role+' assignment. Read the internal swarm context and follow the board.',metadata:{swarm:s.key,initial:true},delivery:'queue',resume:true},s.directory);
-  m.seeded=true;
+  m.seeded=true;m.seedPending=false;m.launchPending=false;
  }else await native('wake',{sessionID:m.sessionId,id:stableId('msg_',s.id+':'+m.name+':'+ids.join(',')+':'+dispatchSeq),text:notice,description:'Swarm · '+ids.length+' board '+(ids.length===1?'mention':'mentions'),metadata:{swarm:s.key,posts:ids},delivery:'queue',resume:true},s.directory);
  m.initialized=true;m.dispatchSeq=dispatchSeq+1;s.turns++;m.retryAt=m.queue.some(id=>ids.includes(id))?Date.now()+10000:0;
  if(s.status!=='running'||m.state==='retired'){if(m.sessionId)await host.sessions.stop(m.sessionId).catch(()=>{});return;}
  if(m.state==='dispatching'){m.state='active';m.error='';}mark(s,m);persist(s);
- }catch(e){if(m.state!=='retired')m.state='blocked';m.error=String(e.message||e);m.retryAt=Date.now()+15000;persist(s);}finally{inFlight.delete(k);schedule();}})();
+ }catch(e){if(m.state!=='retired')m.state='blocked';m.error=m.seedPending?seedUncertain+' '+String(e.message||e):String(e.message||e);m.retryAt=Date.now()+15000;persist(s);}finally{inFlight.delete(k);schedule();}})();
  }}
 }
-function begin(b){if(locate(b.sessionId))throw Error('Current conversation already belongs to a running swarm');
- const s=createSwarm({...b,number:state.next++});Object.assign(s,state.settings);s.launchModel=modelName(modelRef(b.modelRef)||modelRef(b.model));s.launchModelRef=modelRef(b.modelRef)||modelRef(b.model);const m=s.members[0];if(s.launchModelRef){m.model=s.launchModel;m.modelRef=s.launchModelRef;}if(s.coordinatorModel&&!m.sessionId){m.model=s.coordinatorModel;m.modelRef=modelRef(s.coordinatorModel);}m.state='waiting';m.acked=[];appendPost(s,'user',['coordinator'],s.task,'brief');state.swarms.push(s);persist(s);mark(s,m);schedule();return publicSwarm(s);}
+function begin(b){const existing=locate(b.sessionId);if(existing){if(existing.m.role==='coordinator'&&normalizeDir(existing.s.directory)===normalizeDir(b.directory)&&typeof b.task==='string'&&existing.s.task===b.task.trim())return {...publicSwarm(existing.s),alreadyStarted:true};throw Error('Current conversation already belongs to a running swarm');}
+ const s=createSwarm({...b,number:state.next++});Object.assign(s,state.settings);s.launchModel=modelName(modelRef(b.modelRef)||modelRef(b.model));s.launchModelRef=modelRef(b.modelRef)||modelRef(b.model);const m=s.members[0];if(s.launchModelRef){m.model=s.launchModel;m.modelRef=s.launchModelRef;}if(s.coordinatorModel&&!m.sessionId){m.model=s.coordinatorModel;m.modelRef=modelRef(s.coordinatorModel);}m.state='waiting';m.launchPending=true;const brief=appendPost(s,'user',['coordinator'],s.task,'brief',false);s.launchPostId=brief.id;m.acked=[brief.id];state.swarms.push(s);persist(s);mark(s,m);schedule();return publicSwarm(s);}
 function add(s,b){const override=b.role==='verifier'?s.verifierModel:s.workerModel;const chosen=override||s.launchModel||s.members[0].model;const m=addMember(s,{...b,model:chosen});if(!override)m.modelRef=s.launchModelRef||modelRef(chosen);m.acked=[];appendPost(s,'coordinator',[m.name],m.brief,'brief',!b.deferred);persist(s);schedule();return m;}
 function handleAgent(b){
  const found=locate(b.sessionId);if(!found)throw Error('Session is not a running swarm member');
@@ -78,7 +95,7 @@ function handleAgent(b){
 }
 function ack(s,m,ids){const allowed=new Set(s.posts.filter(p=>p.to.includes(m.name)).map(p=>p.id));const accepted=ids.filter(id=>allowed.has(id));m.acked=[...new Set([...(m.acked||[]),...accepted])];m.queue=m.queue.filter(id=>!accepted.includes(id));if(accepted.length)m.read=Math.max(m.read||0,...accepted);}
 function snapshot(s,m){
- const addressed=s.posts.filter(p=>p.to.includes(m.name)&&p.from!==m.name);
+ const addressed=s.posts.filter(p=>p.to.includes(m.name)&&p.from!==m.name&&!(m.role==='coordinator'&&p.id===s.launchPostId));
  const unseen=addressed.filter(p=>!(m.acked||[]).includes(p.id)),recent=addressed.slice(-5),chosen=[];
  let budget=42000;for(const p of [...unseen,...recent.filter(p=>!unseen.includes(p))]){const cost=p.text.length+200;if(cost>budget)continue;budget-=cost;chosen.push(p);}
  chosen.sort((a,b)=>a.id-b.id);
@@ -90,7 +107,7 @@ function idle(s,m,reply){if(m.state==='retired'||m.state==='blocked')return;m.st
 function event(b){const e=b.event;if(!e||!e.session)return;const found=locate(e.session.id);if(!found)return;const {s,m}=found;
  if(s.seenEvents.includes(e.id)||m.state==='retired')return;s.seenEvents.push(e.id);s.seenEvents=s.seenEvents.slice(-1000);
  if(e.type==='turn-finished'){if(m.state!=='blocked')idle(s,m,b.content?.reply);}
- else if(e.type==='turn-failed'){m.state='blocked';m.error=b.content?.error?.message||'Turn failed';}
+ else if(e.type==='turn-failed'){m.state='blocked';m.error=m.seedPending?seedUncertain:(b.content?.error?.message||'Turn failed');}
  else if(e.type==='permission-asked'||e.type==='question-asked'){m.state='blocked';m.error=e.type==='permission-asked'?'Tool approval required':'User input required';}
  mark(s,m);persist(s);schedule();}
 const monitorReviews=new Set();
@@ -105,7 +122,7 @@ function reviewStall(s,recipients){
 async function reconcile(){if(reconciling)return;reconciling=true;try{for(const s of state.swarms){if(s.status!=='running')continue;
  const now=Date.now(),monitor=s.monitor;monitor.checks++;monitor.lastCheck=now;monitor.nextCheck=now+interval;monitor.bridgeConnected=now-(plugins.get(normalizeDir(s.directory))||0)<15000;
  const errors=[];
- for(const m of s.members){if(!m.sessionId||m.state==='retired'||inFlight.has(s.id+':'+m.name))continue;
+ for(const m of s.members){if(!m.sessionId||m.state==='retired'||(m.seedPending&&m.state==='blocked')||inFlight.has(s.id+':'+m.name))continue;
  try{const {status}=await host.sessions.status(m.sessionId);
  if(status==='idle'&&m.state==='active'&&now-m.dispatchAt>10000){m.state='waiting';m.idleAt=now;m.error='';}
  else if(['busy','running','retry','retrying'].includes(status)&&m.state!=='active'){m.state='active';m.error='';}
@@ -146,7 +163,7 @@ const server=http.createServer(async(req,res)=>{try{if(!auth(req))return json(re
  if(u.pathname==='/agent')return json(res,200,handleAgent(b));
  const s=lookup(b.id);if(!s)throw Error('Unknown swarm');
  if(u.pathname==='/message'){if(s.status!=='running')throw Error('Swarm not running');appendPost(s,'user',b.to?[b.to]:[],b.text,'instruction');persist(s);schedule();return json(res,200,{ok:true});}
- if(u.pathname==='/retry'){const m=s.members.find(x=>x.name===b.name);if(!m||m.state!=='blocked')throw Error('Member is not blocked');m.state='waiting';m.error='';m.retryAt=0;m.missedWake=0;m.refreshModel=!!m.sessionId;if(!m.queue.length)appendPost(s,'user',[m.name],'Resume after the failure; inspect the board and continue.','retry');persist(s);schedule();return json(res,200,{ok:true});}
+ if(u.pathname==='/retry'){const m=s.members.find(x=>x.name===b.name);if(!m||m.state!=='blocked')throw Error('Member is not blocked');m.state='waiting';m.error='';m.retryAt=0;m.missedWake=0;m.refreshModel=!!m.sessionId;if(!m.queue.length&&!m.launchPending&&!m.seedPending)appendPost(s,'user',[m.name],'Resume after the failure; inspect the board and continue.','retry');persist(s);schedule();return json(res,200,{ok:true});}
  if(u.pathname==='/delete'){removeSwarm(s);return json(res,200,{ok:true});}
  if(u.pathname==='/stop'){s.status='stopped';for(const m of s.members){m.state='retired';m.queue=[];if(m.sessionId)host.sessions.stop(m.sessionId).catch(()=>{});}persist(s);return json(res,200,{ok:true});}
  return json(res,404,{error:'Unknown route'});

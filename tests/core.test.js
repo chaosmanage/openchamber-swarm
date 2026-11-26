@@ -14,3 +14,9 @@ test('assignment briefs do not notify agents mentioned within assignment text',(
  const check=appendPost(s,'coordinator',['verifier'],'Check @alpha and @beta.','brief',false);
  assert.deepEqual(check.to,['verifier']);assert.deepEqual(v.queue,[]);assert.equal(v.deferred,true);
 });
+test('a public launch brief can be recorded without a wake, while identical later instructions still wake',()=>{
+ const s=make(),m=s.members[0],brief=appendPost(s,'user',['coordinator'],s.task,'brief',false);
+ assert.deepEqual(brief.to,['coordinator']);assert.deepEqual(m.queue,[]);
+ const later=appendPost(s,'user',['coordinator'],s.task,'instruction');
+ assert.deepEqual(m.queue,[later.id]);assert.equal(s.posts.length,2);
+});

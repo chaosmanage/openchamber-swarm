@@ -2,9 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import {spawn} from 'node:child_process';
-import {mkdtemp,rm,readFile} from 'node:fs/promises';
+import {mkdtemp,rm,readFile,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
+import plugin from '../plugin/index.js';
 const listen=s=>new Promise(r=>s.listen(0,'127.0.0.1',()=>r(s.address().port)));
 const wait=async(fn,ms=6000)=>{const end=Date.now()+ms;while(Date.now()<end){const x=await Promise.resolve().then(fn).catch(()=>null);if(x)return x;await new Promise(r=>setTimeout(r,30));}throw Error('Timed out');};
 test('scoped native bridge, implicit context, sleeping wake, busy delivery, monitor and restart',async(t)=>{
@@ -12,7 +13,7 @@ test('scoped native bridge, implicit context, sleeping wake, busy delivery, moni
  const host=http.createServer(async(req,res)=>{let s='';for await(const c of req)s+=c;const {method,input}=JSON.parse(s);calls.push({method,input});let result={ok:true};if(method==='sessions.status')result={status:statuses.get(input.sessionId)||'idle'};if(method==='sessions.stop'){statuses.set(input.sessionId,'idle');result={stopped:true};}res.setHeader('Content-Type','application/json');res.end(JSON.stringify({result}));});
  const hp=await listen(host);const probe=http.createServer();const port=await listen(probe);await new Promise(r=>probe.close(r));
  const config={...process.env,HOME:dir,OPENCHAMBER_SERVICE_PORT:String(port),OPENCHAMBER_SERVICE_TOKEN:'test-token',OPENCHAMBER_SERVICE_DATA_DIR:dir,OPENCHAMBER_HOST_CALLBACK_URL:'http://127.0.0.1:'+hp,SWARM_TEST_INTERVAL_MS:'150',SWARM_TEST_STALL_MS:'900',SWARM_TEST_REMINDER_MS:'2000'};
- let proc=spawn(process.execPath,['service/main.js'],{env:config,stdio:'ignore'}),quit=false,bridge;
+ let proc=spawn(process.execPath,['src/service.js'],{env:config,stdio:'ignore'}),quit=false,bridge;
  t.after(async()=>{quit=true;await bridge;proc.kill();await new Promise(r=>host.close(r));await rm(dir,{force:true,recursive:true});});
  const req=async(p,b)=>{const r=await fetch('http://127.0.0.1:'+port+p,{method:b?'POST':'GET',headers:{Authorization:'Bearer test-token','Content-Type':'application/json'},...(b?{body:JSON.stringify(b)}:{})});const v=await r.json();assert.equal(r.status,200,JSON.stringify(v));return v;};
  await wait(()=>req('/health'));
@@ -27,7 +28,8 @@ test('scoped native bridge, implicit context, sleeping wake, busy delivery, moni
   const {job}=await req('/bridge/poll',{directory:'/repo'});
   if(job){nativeCalls.push(job);let result;if(job.op==='create'){result={id:job.input.id,model:job.input.model||{providerID:'test',id:'selected'}};statuses.set(result.id,'idle');}else if(job.op==='get'){result={id:job.input.sessionID,model:{providerID:'test',id:'selected'}};}else if(job.op==='switch-model'){result={ok:true};}else if(job.op==='review'){result={text:'Check the remaining verifier report.'};}else{assert.ok(['seed','wake'].includes(job.op));statuses.set(job.input.sessionID,'busy');result={id:job.input.id};}await req('/bridge/result',{id:job.id,result});if(['seed','wake'].includes(job.op))await inject(job.input.sessionID);}
  }catch(e){if(!quit&&e.code==='ERR_ASSERTION')throw e;}await new Promise(r=>setTimeout(r,20));}})();
- const coord=await wait(async()=>{const m=await member('coordinator');return m.state==='active'&&m.pending===0&&m;});
+  const coord=await wait(async()=>{const m=await member('coordinator');return m.state==='active'&&m.pending===0&&m;});
+  await wait(()=>contexts.get(coord.sessionId));
  assert.ok(coord.sessionId.startsWith('ses_'));assert.ok(nativeCalls.some(c=>c.op==='seed'&&c.input.sessionID===coord.sessionId&&c.input.text==='Implement test'));assert.equal(coord.model,'test/selected');assert.match(contexts.get(coord.sessionId).text,/Implement test/);
  await agent(coord.sessionId,'add',{name:'fix-1',brief:'Fix issue',paths:['x.js']});
  await agent(coord.sessionId,'add',{name:'verify',brief:'Check work',role:'verifier',deferred:true});
@@ -114,11 +116,129 @@ test('scoped native bridge, implicit context, sleeping wake, busy delivery, moni
  assert.equal((await pickerState()).members.find(m=>m.name==='picker-worker').pending,0);
  await req('/delete',{id:third.id});
 
- quit=true;await bridge;proc.kill();await new Promise(r=>proc.once('exit',r));proc=spawn(process.execPath,['service/main.js'],{env:config,stdio:'ignore'});await wait(()=>req('/health'));assert.equal((await state()).status,'stopped');
+ quit=true;await bridge;proc.kill();await new Promise(r=>proc.once('exit',r));proc=spawn(process.execPath,['src/service.js'],{env:config,stdio:'ignore'});await wait(()=>req('/health'));assert.equal((await state()).status,'stopped');
  await req('/settings',{workerModel:'test/worker',verifierModel:'test/verifier'});
  assert.equal((await req('/settings')).workerModel,'test/worker');
  const next=await req('/start',{task:'Delete me',directory:'/repo',sessionId:'ses_cleanup',model:'test/selected'});
  await req('/session-deleted',{sessionId:'ses_cleanup',directory:'/repo'});
  assert.ok(!(await req('/list?directory=%2Frepo')).some(s=>s.id===next.id));
  await req('/delete',{id:s.id});assert.equal((await req('/list?directory=%2Frepo')).length,0);
+});
+
+// Exercise the real command and bridge against a host fixture. A native command
+// itself contributes no user message; session.prompt admits one by message ID.
+async function launchFixture(t,{failSeed=false,holdSeed=false}={}){
+ const home=await mkdtemp(path.join(tmpdir(),'swarm-launch-')),oldHome=process.env.HOME;
+ process.env.HOME=home;
+ const statuses=new Map(),host=http.createServer(async(req,res)=>{let raw='';for await(const c of req)raw+=c;const {method,input}=JSON.parse(raw);res.setHeader('Content-Type','application/json');res.end(JSON.stringify({result:method==='sessions.status'?{status:statuses.get(input.sessionId)||'idle'}:{ok:true}}));});
+ const hp=await listen(host),probe=http.createServer(),port=await listen(probe);await new Promise(r=>probe.close(r));
+ const config={...process.env,HOME:home,OPENCHAMBER_SERVICE_PORT:String(port),OPENCHAMBER_SERVICE_TOKEN:'test-token',OPENCHAMBER_SERVICE_DATA_DIR:home,OPENCHAMBER_HOST_CALLBACK_URL:'http://127.0.0.1:'+hp,SWARM_TEST_INTERVAL_MS:'150',SWARM_TEST_STALL_MS:'600000'};
+ const spawnService=()=>spawn(process.execPath,['src/service.js'],{env:config,stdio:'ignore'});
+ let proc=spawnService(),cleanup;
+ let release;const held=new Promise(r=>release=r);
+ const req=async(p,b)=>{const r=await fetch('http://127.0.0.1:'+port+p,{method:b?'POST':'GET',headers:{Authorization:'Bearer test-token','Content-Type':'application/json'},...(b?{body:JSON.stringify(b)}:{})});const v=await r.json();assert.equal(r.status,200,JSON.stringify(v));return v;};
+ t.after(async()=>{release();cleanup?.();if(proc.exitCode===null&&proc.signalCode===null){proc.kill();await new Promise(r=>proc.once('exit',r));}process.env.HOME=oldHome;await new Promise(r=>host.close(r));await rm(home,{recursive:true,force:true});});
+ await wait(()=>req('/health'));
+ const hooks={},commands=[],admissions=new Map(),attempts=[],synthetics=[],contexts=[],updates=[],model={providerID:'picker',id:'chosen',variant:'high'};
+ const ctx={location:{directory:'/repo'},session:{
+  hook:async(n,f)=>hooks[n]=f,
+  create:async input=>({id:input.id,model:input.model||model}),
+  get:async({sessionID})=>({id:sessionID,model,title:updates.at(-1)?.title}),
+  update:async input=>updates.push(input),switchModel:async()=>{},
+  prompt:async input=>{
+   attempts.push(input);
+   if(admissions.has(input.id))return admissions.get(input.id);
+   const result={id:input.id,sessionID:input.sessionID,type:'user',text:input.text};admissions.set(input.id,result);statuses.set(input.sessionID,'busy');
+   const event={sessionID:input.sessionID,system:[],messages:[]};await hooks.context(event);contexts.push(event);
+   if(holdSeed){holdSeed=false;await held;}
+   if(failSeed){failSeed=false;throw Error('Simulated lost native acknowledgement');}
+   return result;
+  },
+  synthetic:async input=>{synthetics.push(input);statuses.set(input.sessionID,'busy');const event={sessionID:input.sessionID,system:[],messages:[]};await hooks.context(event);contexts.push(event);return {id:input.id};}
+ },event:{async *subscribe(){}},experimental:{generate:{text:async()=>({text:'Launch fixture'})}},command:{transform:async f=>f({add:c=>commands.push(c)})},tool:{transform:async f=>f({add(){}})}};
+ cleanup=await plugin.setup(ctx);
+ const sessionID='ses_native_launch',task='Build a launch fixture',command=()=>commands[0].execute({sessionID,prompt:{text:task},delivery:'queue'});
+ const state=async()=> (await req('/list?directory=%2Frepo'))[0];
+ const restart=async(rewrite)=>{proc.kill('SIGKILL');await new Promise(r=>proc.once('exit',r));if(rewrite){const file=path.join(home,'swarms.json'),saved=JSON.parse(await readFile(file,'utf8'));rewrite(saved);await writeFile(file,JSON.stringify(saved));}proc=spawnService();await wait(()=>req('/health'));};
+ return {req,command,state,sessionID,task,admissions,attempts,synthetics,contexts,statuses,ctx,release,restart,model,updates};
+}
+
+test('native command and compose-then-send launch one visible prompt, with independent later turns and board posts',async t=>{
+ const f=await launchFixture(t);
+ // The panel composes "/swarm " + task; OpenChamber dispatches its argument to this native command.
+ await Promise.all([f.command(),f.command(),f.command()]);
+ const s=await f.state();assert.equal(s.posts.length,1);assert.deepEqual(s.posts.map(p=>[p.from,p.to,p.kind,p.text]),[['user',['coordinator'],'brief',f.task]]);
+ await wait(()=>f.admissions.size===1);await wait(async()=> (await f.state()).members[0].seeded);
+ assert.equal(f.attempts.length,1);assert.equal(f.attempts[0].text,f.task);assert.equal(f.attempts[0].delivery,'queue');assert.equal(f.attempts[0].metadata.initial,true);
+ assert.equal((await f.state()).launchModel,'picker/chosen');assert.equal((await f.state()).launchModelRef.variant,'high');
+ assert.equal(f.contexts[0].messages.length,0);assert.equal(f.contexts[0].system[0].text.split(f.task).length-1,1);
+ assert.equal((await f.state()).members[0].pending,0);assert.equal((await f.state()).turns,1);
+ f.statuses.set(f.sessionID,'idle');await f.req('/idle',{sessionId:f.sessionID,directory:'/repo'});
+ await new Promise(r=>setTimeout(r,350));assert.equal(f.synthetics.length,0);
+ // A regular user turn with identical text is a different native message, not a duplicate launch.
+ await f.ctx.session.prompt({sessionID:f.sessionID,id:'msg_later_user_turn',text:f.task});
+ assert.equal(f.admissions.size,2);assert.equal([...f.admissions.values()].filter(m=>m.text===f.task).length,2);
+ // An addressed board post with identical text is also a new event and wakes normally.
+ f.statuses.set(f.sessionID,'idle');await f.req('/idle',{sessionId:f.sessionID,directory:'/repo'});
+ await f.req('/message',{id:s.id,to:'coordinator',text:f.task});
+ await wait(()=>f.synthetics.length===1,15000);await wait(()=>f.contexts.at(-1)?.system[0]?.text.includes('"kind":"instruction"'));
+ assert.equal((await f.state()).posts.length,2);assert.match(f.contexts.at(-1).system[0].text,/"kind":"instruction"/);
+});
+
+test('a lost start acknowledgement can be retried as the same native command',async t=>{
+ const f=await launchFixture(t),originalFetch=globalThis.fetch;let drop=true;
+ try{
+  globalThis.fetch=async(url,options)=>{const response=await originalFetch(url,options);if(drop&&String(url).endsWith('/start')){drop=false;await response.text();throw new TypeError('Simulated lost response');}return response;};
+  await assert.rejects(f.command(),/could not be confirmed.*retry the same \/swarm/i);
+ }finally{globalThis.fetch=originalFetch;}
+ await f.command();
+ await wait(()=>f.admissions.size===1);await wait(async()=> (await f.state()).members[0].seeded);
+ assert.equal(f.attempts.length,1);assert.equal((await f.state()).turns,1);assert.equal((await f.state()).posts.length,1);
+ await assert.rejects(f.req('/start',{sessionId:f.sessionID,directory:'/repo',task:'A different task'}),/already belongs/);
+});
+
+test('lost seed acknowledgement blocks with recovery and retry reuses the admitted prompt ID',async t=>{
+ const f=await launchFixture(t,{failSeed:true});await f.command();
+ const blocked=await wait(async()=>{const s=await f.state();return s.members[0].state==='blocked'&&s;});
+ assert.match(blocked.members[0].error,/uncertain.*Retry/);assert.equal(f.admissions.size,1);assert.equal(f.attempts.length,1);assert.equal(blocked.posts.length,1);
+ await new Promise(r=>setTimeout(r,350));assert.equal(f.attempts.length,1);
+ f.statuses.set(f.sessionID,'idle');await f.req('/retry',{id:blocked.id,name:'coordinator'});
+ await wait(()=>f.attempts.length===2);await wait(async()=> (await f.state()).members[0].seeded);
+ assert.equal(f.attempts[0].id,f.attempts[1].id);assert.equal(f.admissions.size,1);assert.equal((await f.state()).turns,1);assert.equal((await f.state()).posts.length,1);assert.equal(f.synthetics.length,0);
+});
+
+test('restart after seed admission exposes recovery instead of silently replaying',async t=>{
+ const f=await launchFixture(t,{holdSeed:true});await f.command();await wait(()=>f.admissions.size===1);
+ await f.restart();const blocked=await wait(async()=>{const s=await f.state();return s.members[0].state==='blocked'&&s;});
+ assert.match(blocked.members[0].error,/uncertain.*Retry/);assert.equal(blocked.posts.length,1);
+ f.release();await new Promise(r=>setTimeout(r,1200));assert.equal(f.attempts.length,1);
+ f.statuses.set(f.sessionID,'idle');await f.req('/retry',{id:blocked.id,name:'coordinator'});
+ await wait(()=>f.attempts.length===2);await wait(async()=> (await f.state()).members[0].seeded);
+ assert.equal(f.attempts[0].id,f.attempts[1].id);assert.equal(f.admissions.size,1);assert.equal((await f.state()).turns,1);assert.equal(f.synthetics.length,0);
+});
+
+test('worker seed retry survives a lost acknowledgement after its brief was consumed',async t=>{
+ const f=await launchFixture(t);await f.command();await wait(async()=> (await f.state()).members[0].seeded);
+ const original=f.ctx.session.prompt;let failWorker=true;
+ f.ctx.session.prompt=async input=>{const result=await original(input);if(failWorker&&input.text.startsWith('Start your worker')){failWorker=false;throw Error('Lost worker acknowledgement');}return result;};
+ await f.req('/agent',{sessionId:f.sessionID,action:'add',input:{name:'worker',brief:'Do the worker task',paths:['src/work']}});
+ const blocked=await wait(async()=>{const s=await f.state(),m=s.members.find(m=>m.name==='worker');return m?.state==='blocked'&&{s,m};});
+ assert.equal(blocked.m.pending,0);assert.match(blocked.m.error,/uncertain.*Retry/);
+ const attempts=()=>f.attempts.filter(a=>a.sessionID===blocked.m.sessionId);
+ assert.equal(attempts().length,1);f.statuses.set(blocked.m.sessionId,'idle');
+ await f.req('/retry',{id:blocked.s.id,name:'worker'});await wait(()=>attempts().length===2);
+ await wait(async()=> (await f.state()).members.find(m=>m.name==='worker').seeded);
+ assert.equal(attempts()[0].id,attempts()[1].id);assert.equal([...f.admissions.values()].filter(a=>a.sessionID===blocked.m.sessionId).length,1);
+ assert.equal((await f.state()).posts.length,2);assert.equal(f.synthetics.length,0);
+});
+
+test('legacy launch-brief migration preserves a later identical addressed instruction',async t=>{
+ const f=await launchFixture(t);await f.command();await wait(async()=> (await f.state()).members[0].seeded);f.statuses.set(f.sessionID,'idle');
+ await f.restart(saved=>{
+  const s=saved.swarms[0],m=s.members[0];delete s.launchPostId;delete m.seeded;
+  m.initialized=true;m.state='waiting';m.queue=[1,2];m.acked=[];m.retryAt=0;
+  s.posts.push({id:2,at:Date.now(),from:'user',to:['coordinator'],kind:'instruction',text:s.task});
+ });
+ await wait(()=>f.synthetics.length===1);await wait(()=>f.contexts.at(-1)?.system[0]?.text.includes('"kind":"instruction"'));
+ assert.deepEqual(f.synthetics[0].metadata.posts,[2]);assert.equal(f.attempts.length,1);assert.equal((await f.state()).posts.length,2);
 });

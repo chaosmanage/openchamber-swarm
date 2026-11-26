@@ -1,8 +1,11 @@
 import {connectHost} from '@openchamber/sdk';
-import {graphCamera,layoutGraph,collectEdges,edgeGeometry} from './graph-layout.js';
+import {graphCamera,layoutGraph,collectEdges,edgeGeometry,graphMotion,memberCue} from './graph-layout.js';
 const host=connectHost(), root=document.getElementById('app');
 let requestedSwarm='';
 let lastFeedCount=0;
+let boardSwarm='',newPosts=0,followScroll=false,jumpLatest=false,renderedSwarmId='',resetScrollOnRender=false;
+const boardDrafts=new Map();
+const sendingMessages=new Set();
 let directory=null,session=null,swarms=[],selected='',tab='Overview',mode='Hive',filter='',memberFilter='',replay=null,playing=false,timer=null,error='',loading=false,ready=false,graphMember='',follow=true,memberSearch='',hideInactive=false,zoomLevel=1,pace=1,newFormOpen=false,graphExpanded=false,settingsOpen=false,deleteConfirm=false,stopConfirm=false,swarmSettings={coordinatorModel:'',workerModel:'',verifierModel:'',monitorModel:'',monitorReasoning:false},availableModels=[];
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmt=t=>new Date(t).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
@@ -26,11 +29,34 @@ async function launch(task){
  return true;
 }
 function current(){return swarms.find(s=>s.id===selected)||swarms[0];}
-async function refresh(){if(!ready||loading||(!directory&&!session))return;loading=true;try{const next=await api('/list',null,{directory:directory||'',sessionId:session?.id||''});if(JSON.stringify(next)===JSON.stringify(swarms)&&!error)return;const previous=current(),newSwarm=next.find(s=>!swarms.some(old=>old.id===s.id));swarms=next;if(newSwarm)selected=newSwarm.id;if(requestedSwarm){const match=swarms.find(x=>x.id===requestedSwarm||x.key===requestedSwarm||x.members.some(m=>m.sessionId===requestedSwarm));if(match){selected=match.id;requestedSwarm='';}}if(!swarms.some(s=>s.id===selected))selected=swarms[0]?.id||'';error='';const updated=current();if(tab==='Graph'&&previous&&updated&&previous.id===updated.id&&previous.title===updated.title&&previous.status===updated.status&&previous.members.map(m=>m.name).join('|')===updated.members.map(m=>m.name).join('|')&&!settingsOpen&&!deleteConfirm&&!stopConfirm&&!newFormOpen&&root.querySelector('.graph-view')){const badge=root.querySelector('[data-tab=Board] span');if(badge)badge.textContent=updated.posts.length;const memberBadge=root.querySelector('[data-tab=Members] span');if(memberBadge)memberBadge.textContent=updated.members.filter(m=>m.state!=='retired').length;replayFrame();}else render();}catch(e){error=e.message;render();}finally{loading=false;}}
+function saveBoardDraft(swarmId,text,to){
+ const previous=boardDrafts.get(swarmId);
+ if(previous&&previous.text===text&&previous.to===to)return previous;
+ const draft={text,to,revision:(previous?.revision||0)+1};
+ boardDrafts.set(swarmId,draft);
+ return draft;
+}
+function boardDraft(swarmId){
+ return boardDrafts.get(swarmId)||{text:'',to:'coordinator',revision:0};
+}
+function trackBoardPosts(previous,updated){
+ if(!updated||boardSwarm!==updated.id)return;
+ if(previous?.id===updated.id&&updated.posts.length>previous.posts.length){
+  if(follow){
+   newPosts=0;
+   lastFeedCount=updated.posts.length;
+   if(tab==='Board')followScroll=true;
+  }else newPosts=Math.max(0,updated.posts.length-lastFeedCount);
+ }else if(updated.posts.length<lastFeedCount){
+  lastFeedCount=updated.posts.length;
+  newPosts=0;
+ }
+}
+async function refresh(){if(!ready||loading||(!directory&&!session))return;loading=true;try{const next=await api('/list',null,{directory:directory||'',sessionId:session?.id||''});if(JSON.stringify(next)===JSON.stringify(swarms)&&!error)return;const previous=current(),newSwarm=next.find(s=>!swarms.some(old=>old.id===s.id));swarms=next;if(newSwarm)selected=newSwarm.id;if(requestedSwarm){const match=swarms.find(x=>x.id===requestedSwarm||x.key===requestedSwarm||x.members.some(m=>m.sessionId===requestedSwarm));if(match){selected=match.id;requestedSwarm='';}}if(!swarms.some(s=>s.id===selected))selected=swarms[0]?.id||'';error='';const updated=current();trackBoardPosts(previous,updated);if(tab==='Graph'&&previous&&updated&&previous.id===updated.id&&previous.title===updated.title&&previous.status===updated.status&&previous.members.map(m=>m.name).join('|')===updated.members.map(m=>m.name).join('|')&&!settingsOpen&&!deleteConfirm&&!stopConfirm&&!newFormOpen&&root.querySelector('.graph-view')){const badge=root.querySelector('[data-tab=Board] span');if(badge)badge.textContent=updated.posts.length;const memberBadge=root.querySelector('[data-tab=Members] span');if(memberBadge)memberBadge.textContent=updated.members.filter(m=>m.state!=='retired').length;replayFrame();}else render();}catch(e){error=e.message;render();}finally{loading=false;}}
 async function action(path,body){try{error='';const result=await api(path,body);await refresh();return result;}catch(e){error=e.message;render();return null;}}
 const short=(t,n=100)=>String(t||'').length>n?String(t).slice(0,n-1)+'…':String(t||'');
 const taskLabel=m=>short((m.brief||m.name).split(/[\n.]/)[0],86);
-const memberLine=(m,s)=>{const i=s.members.indexOf(m),last=s.posts.findLast(p=>p.from===m.name);return '<div class="member-line" '+(m.sessionId?'data-open="'+esc(m.sessionId)+'" role="button" tabindex="0"':'')+'>'+avatar(m,Math.max(0,i))+'<div class="member-copy"><div class="member-top"><strong>@'+esc(m.name)+'</strong><span class="member-state '+esc(m.state)+'">'+(m.role==='coordinator'?'Coordinator · '+({active:'Working',waiting:'Standing by',dispatching:'Waking',blocked:'Needs attention',retired:'Retired'}[m.state]||m.state):m.role==='monitor'?'Monitor':m.state==='active'?'Working':m.state==='waiting'?'Standing by':m.state==='retired'?'Retired':m.state==='blocked'?'Needs attention':'Waking')+'</span><span class="member-model">'+esc(m.model||'')+(m.pending?' · '+m.pending+' pending':'')+(m.lastPost?' · #'+m.lastPost:'')+'</span></div><div class="member-brief">'+esc(taskLabel(m))+'</div><div class="member-last">'+esc(short(last?.text||m.lastReply||'No posts yet',160))+'</div>'+(m.error?'<div class="error">'+esc(m.error)+'</div>':'')+'</div>'+(m.state==='blocked'&&s.status==='running'?'<button data-retry="'+esc(m.name)+'" class="subtle-button">Retry</button>':'')+'</div>';};
+const memberLine=(m,s)=>{const i=s.members.indexOf(m),last=s.posts.findLast(p=>p.from===m.name),reason=m.error||m.blockedReason||m.pendingReason||m.lastReply||'This member is blocked and needs intervention.';return '<div class="member-line '+(m.state==='blocked'?'needs-attention':'')+'" '+(m.sessionId&&m.state!=='blocked'?'data-open="'+esc(m.sessionId)+'" role="button" tabindex="0"':'')+'>'+avatar(m,Math.max(0,i))+'<div class="member-copy"><div class="member-top"><strong>@'+esc(m.name)+'</strong><span class="member-state '+esc(m.state)+'">'+(m.role==='coordinator'?'Coordinator · '+({active:'Working',waiting:'Standing by',dispatching:'Waking',blocked:'Needs attention',retired:'Retired'}[m.state]||m.state):m.role==='monitor'?'Monitor':m.state==='active'?'Working':m.state==='waiting'?'Standing by':m.state==='retired'?'Retired':m.state==='blocked'?'Needs attention':'Waking')+'</span><span class="member-model">'+esc(m.model||'')+(m.pending?' · '+m.pending+' pending':'')+(m.lastPost?' · #'+m.lastPost:'')+'</span></div><div class="member-brief">'+esc(taskLabel(m))+'</div><div class="member-last">'+esc(short(last?.text||m.lastReply||'No posts yet',160))+'</div>'+(m.state==='blocked'?'<div class="attention-reason"><strong>Reason:</strong> '+esc(reason)+'</div>':m.error?'<div class="error">'+esc(m.error)+'</div>':'')+'</div>'+(m.state==='blocked'&&m.sessionId?'<button type="button" data-open-chat="'+esc(m.sessionId)+'" class="attention-open">Open chat</button>':'')+(m.state==='blocked'&&s.status==='running'?'<button type="button" data-retry="'+esc(m.name)+'" class="subtle-button">Retry</button>':'')+'</div>';};
 function monitorLine(s){const m=s.monitor||{};const live=s.status==='running'&&m.lastCheck&&Date.now()-m.lastCheck<45000;return '<section class="card monitor-panel"><div class="monitor-head">'+avatar({role:'monitor',state:live?'active':'waiting'})+'<div><strong>Monitor</strong><div class="muted">'+esc(m.action||'Awaiting first check')+'</div></div><span class="push pill '+(live?'active':'waiting')+'"><i class="dot"></i>'+(live?'Watching':s.status==='running'?'Starting':'Stopped')+'</span></div><div class="monitor-meta"><span>Checks <strong>'+Number(m.checks||0)+'</strong></span><span>Last <strong>'+(m.lastCheck?fmt(m.lastCheck):'—')+'</strong></span><span>Next <strong>'+(m.nextCheck&&s.status==='running'?fmt(m.nextCheck):'—')+'</strong></span><span>Bridge <strong class="'+(m.bridgeConnected?'bridge-online':'')+'">'+(m.bridgeConnected?'Connected':'Waiting')+'</strong></span></div>'+(m.errors?.length?'<details class="monitor-errors"><summary>'+m.errors.length+' session check issue(s)</summary>'+m.errors.map(e=>'<p>'+esc(e)+'</p>').join('')+'</details>':'')+'</section>';}
 function overview(s){
  const tasks=s.members.filter(m=>m.role!=='coordinator'),finished=m=>['reported','verified'].includes(m.taskState),done=tasks.filter(finished),running=tasks.filter(m=>['active','dispatching'].includes(m.state)&&!finished(m)),up=tasks.filter(m=>!finished(m)&&!running.includes(m)),pct=tasks.length?Math.round(done.length/tasks.length*100):0;
@@ -39,46 +65,70 @@ function overview(s){
 }
 const expandedPosts=new Set();
 function board(s){
+ if(boardSwarm!==s.id){boardSwarm=s.id;lastFeedCount=s.posts.length;newPosts=0;followScroll=follow;jumpLatest=false;}
  const self=s.members.find(m=>m.sessionId===session?.id);let newDivider=false;const posts=s.posts.filter(p=>(!filter||JSON.stringify(p).toLowerCase().includes(filter.toLowerCase()))&&(!memberFilter||p.from===memberFilter||p.to.includes(memberFilter)));
- return '<div class="board-tools"><label class="search-box"><span>⌕</span><input type="search" id="filter" value="'+esc(filter)+'" placeholder="Search"></label><select id="memberFilter" aria-label="Filter by member"><option value="">Filters</option>'+s.members.map(m=>'<option value="'+esc(m.name)+'" '+(m.name===memberFilter?'selected':'')+'>@'+esc(m.name)+'</option>').join('')+'</select><button id="follow" class="subtle-button" aria-pressed="'+follow+'">'+(follow?'●':'○')+' Follow</button></div><div id="feed">'+(posts.length?posts.map(p=>{const divider=!newDivider&&self&&p.id>self.read?(newDivider=true,'<div class="new-divider">New</div>'):'';const author=s.members.find(m=>m.name===p.from)||{name:p.from,role:p.from==='monitor'?'monitor':'worker',state:'waiting'},full=expandedPosts.has(p.id),long=p.text.length>480;return divider+'<article class="board-post '+(full?'expanded-post':'')+'">'+avatar(author,Math.max(0,s.members.indexOf(author)))+'<div class="post-copy"><div class="post-meta"><strong>@'+esc(p.from)+'</strong><span class="post-target">→ '+esc(p.to.map(x=>'@'+x).join(' '))+'</span><span class="post-time">#'+p.id+' · '+fmt(p.at)+'</span></div><div class="text '+(long&&!full?'clamped':'')+'">'+esc(p.text)+'</div><div class="post-actions"><span class="kind-chip '+esc(p.kind)+'">['+esc(p.kind)+']</span>'+(long?'<button class="subtle-button" data-expand="'+p.id+'">'+(full?'Show less':'Show more')+'</button>':'')+'</div></div></article>';}).join(''):'<p class="muted">No matching posts.</p>')+'</div>'+(s.status==='running'?'<form id="message" class="compose-card"><div class="row"><label>Post to</label><select name="to"><option value="coordinator">@coordinator</option><option value="all">@all</option>'+s.members.filter(m=>m.name!=='coordinator'&&m.state!=='retired').map(m=>'<option>'+esc(m.name)+'</option>').join('')+'</select></div><textarea name="text" placeholder="Message the swarm…" required maxlength="20000"></textarea><button class="primary">Post message</button></form>':'');
+ const openTarget=p=>s.members.find(m=>m.name===p.from&&m.sessionId)||s.members.find(m=>p.to.includes(m.name)&&m.sessionId);
+ return '<section id="board-view" class="board-view" tabindex="0" role="region" aria-label="Swarm board" aria-keyshortcuts="j k g G f o Escape"><div class="board-tools"><label class="search-box"><span>⌕</span><input type="search" id="filter" value="'+esc(filter)+'" placeholder="Search posts"></label><select id="memberFilter" aria-label="Filter by member"><option value="">All members</option>'+s.members.map(m=>'<option value="'+esc(m.name)+'" '+(m.name===memberFilter?'selected':'')+'>@'+esc(m.name)+'</option>').join('')+'</select><button id="follow" class="subtle-button" aria-pressed="'+follow+'">'+(follow?'● Follow':'○ Follow')+'</button></div>'+(newPosts?'<button type="button" id="new-posts" class="new-posts">'+newPosts+' new post'+(newPosts===1?'':'s')+' · Go to latest</button>':'')+'<div id="feed">'+(posts.length?posts.map(p=>{const divider=!newDivider&&self&&p.id>self.read?(newDivider=true,'<div class="new-divider">New</div>'):'';const author=s.members.find(m=>m.name===p.from)||{name:p.from,role:p.from==='monitor'?'monitor':'worker',state:'waiting'},target=openTarget(p),full=expandedPosts.has(p.id),long=p.text.length>480;return divider+'<article class="board-post '+(full?'expanded-post':'')+'" data-post-id="'+esc(p.id)+'" tabindex="-1">'+avatar(author,Math.max(0,s.members.indexOf(author)))+'<div class="post-copy"><div class="post-meta"><strong>@'+esc(p.from)+'</strong><span class="post-target">→ '+esc(p.to.map(x=>'@'+x).join(' '))+'</span><span class="post-time">#'+p.id+' · '+fmt(p.at)+'</span></div><div class="text '+(long&&!full?'clamped':'')+'">'+esc(p.text)+'</div><div class="post-actions"><span class="kind-chip '+esc(p.kind)+'">['+esc(p.kind)+']</span>'+(target?'<button type="button" class="subtle-button" data-open-chat="'+esc(target.sessionId)+'" data-post-action="chat">Open chat</button>':'')+(long?'<button type="button" class="subtle-button" data-expand="'+p.id+'" data-post-action="expand">'+(full?'Show less':'Show more')+'</button>':'')+'</div></div></article>';}).join(''):'<p class="muted">No matching posts.</p>')+'</div>'+(s.status==='running'?'<form id="message" class="compose-card"><div class="row"><label>Post to</label><select name="to"><option value="coordinator">@coordinator</option><option value="all">@all</option>'+s.members.filter(m=>m.name!=='coordinator'&&m.state!=='retired').map(m=>'<option value="'+esc(m.name)+'">@'+esc(m.name)+'</option>').join('')+'</select></div><textarea name="text" placeholder="Message the swarm…" required maxlength="20000"></textarea><button class="primary">Post message</button></form>':'')+'</section>';
 }
 function members(s){
- const groups=[['Coordinator',s.members.filter(m=>m.role==='coordinator')],['Active',s.members.filter(m=>m.role!=='coordinator'&&['active','dispatching','blocked'].includes(m.state))],['Standing by',s.members.filter(m=>m.role!=='coordinator'&&m.state==='waiting')],['Retired',s.members.filter(m=>m.role!=='coordinator'&&m.state==='retired')]];
- return '<label class="search-box member-search"><span>⌕</span><input type="search" id="memberSearch" placeholder="Search members" value="'+esc(memberSearch)+'"></label>'+groups.map(([name,items])=>{items=items.filter(m=>!memberSearch||m.name.includes(memberSearch.toLowerCase())||m.role.includes(memberSearch.toLowerCase()));if(!items.length)return '';const body=items.map(m=>memberLine(m,s)).join('');return name==='Retired'?'<details class="retired-group"><summary>Retired ('+items.length+')</summary>'+body+'</details>':name==='Coordinator'?'<section class="coordinator-group">'+body+'</section>':'<section class="member-group"><h2>'+name+' ('+items.length+')</h2>'+body+'</section>';}).join('')+(!memberSearch||'monitor'.includes(memberSearch.toLowerCase())?'<section class="member-group"><h2>Supervisor</h2>'+memberLine({name:'monitor',role:'monitor',state:s.status==='running'?'waiting':'retired',brief:'Runtime supervisor · detects stalls and wakes members'},s)+monitorLine(s)+'</section>':'');
+ const groups=[['Needs attention',s.members.filter(m=>m.state==='blocked')],['Coordinator',s.members.filter(m=>m.role==='coordinator'&&m.state!=='blocked')],['Active',s.members.filter(m=>m.role!=='coordinator'&&['active','dispatching'].includes(m.state))],['Standing by',s.members.filter(m=>m.role!=='coordinator'&&m.state==='waiting')],['Retired',s.members.filter(m=>m.role!=='coordinator'&&m.state==='retired')]];
+ const query=memberSearch.toLowerCase();
+ return '<label class="search-box member-search"><span>⌕</span><input type="search" id="memberSearch" placeholder="Search members" value="'+esc(memberSearch)+'"></label>'+groups.map(([name,items])=>{items=items.filter(m=>!query||m.name.toLowerCase().includes(query)||m.role.toLowerCase().includes(query));if(!items.length)return '';const body=items.map(m=>memberLine(m,s)).join('');return name==='Retired'?'<details class="retired-group"><summary>Retired ('+items.length+')</summary>'+body+'</details>':name==='Coordinator'?'<section class="coordinator-group">'+body+'</section>':'<section class="member-group '+(name==='Needs attention'?'attention-group':'')+'"><h2>'+name+' ('+items.length+')</h2>'+body+'</section>';}).join('')+(!query||'monitor'.includes(query)?'<section class="member-group"><h2>Supervisor</h2>'+memberLine({name:'monitor',role:'monitor',state:s.status==='running'?'waiting':'retired',brief:'Runtime supervisor · detects stalls and wakes members'},s)+monitorLine(s)+'</section>':'');
+}
+let graphMotionState=null,graphPulseTimer=null;
+function scheduleGraphPulseExpiry(){
+ clearTimeout(graphPulseTimer);
+ if(!graphMotionState?.pulses.length)return;
+ const until=Math.min(...graphMotionState.pulses.map(p=>p.until));
+ graphPulseTimer=setTimeout(()=>{
+  const now=Date.now();
+  root.querySelectorAll('.graph-view .message-pulse').forEach(path=>{if(Number(path.dataset.until)<=now)path.remove();});
+  if(graphMotionState)graphMotionState.pulses=graphMotionState.pulses.filter(p=>p.until>now);
+  scheduleGraphPulseExpiry();
+ },Math.max(0,until-Date.now()));
 }
 function graph(s){
- const count=replay===null?s.posts.length:Math.min(replay,s.posts.length),posts=s.posts.slice(0,count),last=posts.at(-1);
+  const count=replay===null?s.posts.length:Math.min(replay,s.posts.length),posts=s.posts.slice(0,count),last=posts.at(-1);
+  if(!root.querySelector('.graph-view'))graphMotionState=null;
+  graphMotionState=graphMotion(graphMotionState,s.id,s.posts,replay);
+  scheduleGraphPulseExpiry();
  const historic=m=>{if(replay===null)return m;const h=(s.history||[]).filter(x=>x.name===m.name&&x.post<=count).at(-1);return h?{...m,state:h.state,taskState:h.taskState}:m;};
  const all=[...s.members.map(historic),{name:'monitor',role:'monitor',state:s.status==='running'?(s.monitor?.bridgeConnected?'active':'waiting'):'retired',brief:'Supervises stalls and wakes members.'}];
  const nodes=all.filter(m=>(replay===null||m.role==='monitor'||m.role==='coordinator'||!(s.history||[]).length||(s.history||[]).some(h=>h.name===m.name&&h.post<=count))&&(!hideInactive||!['waiting','retired'].includes(m.state)||m.role==='coordinator'));
  const isHive=mode==='Hive', {positions:pos,r:hexR}=layoutGraph(all,isHive),view=graphCamera(pos,hexR,isHive,zoomLevel),visible=new Set(nodes.map(m=>m.name));
  const edges=collectEdges(posts,visible);
  const hex=(r)=>Array.from({length:6},(_,i)=>{const a=i*Math.PI/3;return [Math.cos(a)*r,Math.sin(a)*r].join(',');}).join(' ');
- const doneAt=m=>posts.some(p=>p.from===m.name&&['done','verified'].includes(p.kind));
+  const doneAt=m=>['reported','verified'].includes(m.taskState);
  const done=all.filter(m=>m.role!=='monitor'&&m.role!=='coordinator'&&doneAt(m)).length,total=s.members.filter(m=>m.role!=='coordinator').length;
  let drawing='<defs><marker id="arr" markerUnits="userSpaceOnUse" markerWidth="7" markerHeight="7" refX="6" refY="3" orient="auto-start-reverse"><path d="M0 0 6 3 0 6" fill="#777980"/></marker><marker id="hot" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto-start-reverse"><path d="M0 0 7 3 0 6" fill="#83a9eb"/></marker></defs>';
  for(const m of all){if(!isHive)break;const [x,y]=pos.get(m.name),finished=m.role==='coordinator'?done===total&&total>0:doneAt(m);
- drawing+='<polygon data-key="cell-'+esc(m.name)+'" class="hive-cell" opacity="'+(visible.has(m.name)?1:0)+'" transform="translate('+x+' '+y+')" points="'+hex(hexR-2)+'" fill="'+(finished?'#20291e':m.role==='coordinator'?'#282118':m.state==='blocked'?'#2a1e20':'#171719')+'" stroke="'+(finished?'#7da36e':m.role==='coordinator'?'#876940':m.state==='blocked'?'#9a6065':'#39393d')+'" stroke-width="'+(finished?1.8:1)+'"/>';}
- for(const e of edges){const {a,b,ab,ba}=e,hotAB=last?.from===a&&last.to.includes(b),hotBA=last?.from===b&&last.to.includes(a),hot=hotAB||hotBA,focus=graphMember===a||graphMember===b;if(isHive&&!hot)continue;
+  drawing+='<polygon data-key="cell-'+esc(m.name)+'" class="hive-cell" opacity="'+(visible.has(m.name)?1:0)+'" transform="translate('+x+' '+y+')" points="'+hex(hexR-2)+'" fill="'+(m.state==='blocked'?'#2a1e20':finished?'#20291e':m.role==='coordinator'?'#282118':'#171719')+'" stroke="'+(m.state==='blocked'?'#9a6065':finished?'#7da36e':m.role==='coordinator'?'#876940':'#39393d')+'" stroke-width="'+(finished?1.8:1)+'"/>';}
+  for(const e of edges){const {a,b,ab,ba}=e,hotAB=replay!==null&&last?.from===a&&last.to.includes(b),hotBA=replay!==null&&last?.from===b&&last.to.includes(a),hot=hotAB||hotBA,focus=graphMember===a||graphMember===b;if(isHive&&!hot)continue;
  const g=edgeGeometry(pos.get(a),pos.get(b),isHive?20:68,isHive?18:16),width=isHive?1.6:Math.min(2.2,1+(ab+ba)*.15),color=hot?'#83a9eb':focus?'#a5a7ad':'#55585e',showAB=isHive?hotAB:ab>0,showBA=isHive?hotBA:ba>0;
- drawing+='<g data-key="edge-'+esc(a)+'-'+esc(b)+'" class="mention-edge"><title>@'+esc(a)+' → @'+esc(b)+': '+ab+' · reverse: '+ba+'</title><path d="'+g.path+'" fill="none" stroke="'+color+'" stroke-width="'+width+'" opacity="'+(hot||focus?1:.65)+'" '+(showAB?'marker-end="url(#'+(hot?'hot':'arr')+')"':'')+' '+(showBA?'marker-start="url(#'+(hot?'hot':'arr')+')"':'')+'/>'+(hot?'<path class="message-trail" d="'+g.path+'" fill="none" stroke="#c1d9ff" stroke-width="1.6" stroke-dasharray="4 28" '+(hotBA&&!hotAB?'style="animation-direction:reverse"':'')+'/>':'')+(!isHive&&(hot||focus)?'<g class="edge-count" transform="translate('+g.x+' '+(g.y-7)+')"><rect x="-18" y="-8" width="36" height="16" rx="5" fill="#1d2026"/><text text-anchor="middle" y="3" fill="#c7c9cd" font-size="9">'+(ab&&ba?ab+' / '+ba:ab+ba)+'</text></g>':'')+'</g>';
- }
- for(const m of all){const i=all.indexOf(m),[x,y]=pos.get(m.name),c=roleColor(m,i),active=(replay!==null||s.status==='running')&&['active','dispatching'].includes(m.state),finished=doneAt(m),label=short(m.name,16),selected=graphMember===m.name,shown=visible.has(m.name),displayBee={...m,state:active?m.state:finished?'resting':m.state==='retired'?'retired':m.state==='blocked'?'blocked':m.state==='waiting'?'waiting':'resting'};
- const stateLabel=m.role==='monitor'?(s.status==='running'?(s.monitor?.bridgeConnected?'Watching':'Waiting'):'Stopped'):finished?'Done':active?'Working':m.state==='blocked'?'Blocked':m.state==='retired'?'Retired':'Standby';
- drawing+='<g data-key="node-'+esc(m.name)+'" class="node '+(m.state==='retired'&&!finished&&s.status==='running'?'inactive-node':'')+'" role="button" tabindex="'+(shown?0:-1)+'" visibility="'+(shown?'visible':'hidden')+'" aria-label="Inspect '+esc(m.name)+'" data-node="'+esc(m.name)+'" transform="translate('+x+' '+y+')"><title>@'+esc(m.name)+' · '+stateLabel+'</title>';
+  drawing+='<g data-key="edge-'+esc(a)+'-'+esc(b)+'" class="mention-edge"><title>@'+esc(a)+' → @'+esc(b)+': '+ab+' · reverse: '+ba+'</title><path d="'+g.path+'" fill="none" stroke="'+color+'" stroke-width="'+width+'" opacity="'+(hot||focus?1:.65)+'" '+(showAB?'marker-end="url(#'+(hot?'hot':'arr')+')"':'')+' '+(showBA?'marker-start="url(#'+(hot?'hot':'arr')+')"':'')+'/>'+(!isHive&&(hot||focus)?'<g class="edge-count" transform="translate('+g.x+' '+(g.y-7)+')"><rect x="-18" y="-8" width="36" height="16" rx="5" fill="#1d2026"/><text text-anchor="middle" y="3" fill="#c7c9cd" font-size="9">'+(ab&&ba?ab+' / '+ba:ab+ba)+'</text></g>':'')+'</g>';
+  }
+  for(const {post,until} of graphMotionState.pulses)for(const to of new Set(post.to)){
+   if(post.from===to||!visible.has(post.from)||!visible.has(to))continue;
+   const g=edgeGeometry(pos.get(post.from),pos.get(to),isHive?20:68,isHive?18:16);
+   drawing+='<path data-key="pulse-'+esc(JSON.stringify([post.id,post.from,to]))+'" data-until="'+until+'" class="message-pulse" style="animation-delay:-'+Math.max(0,1400-(until-Date.now()))+'ms" d="'+g.path+'" pathLength="100" fill="none" stroke="#c1d9ff" stroke-width="2.8" marker-end="url(#hot)"><title>@'+esc(post.from)+' → @'+esc(to)+'</title></path>';
+  }
+ for(const m of all){const i=all.indexOf(m),[x,y]=pos.get(m.name),c=roleColor(m,i),active=(replay!==null||s.status==='running')&&['active','dispatching'].includes(m.state),finished=doneAt(m),label=short(m.name,16),selected=graphMember===m.name,shown=visible.has(m.name),displayBee={...m,state:['retired','blocked'].includes(m.state)?m.state:active?m.state:finished?'resting':m.state==='waiting'?'waiting':'resting'};
+  const cue=m.role==='monitor'?{label:s.status==='running'?(s.monitor?.bridgeConnected?'Watching':'Standing by'):'Stopped',symbol:s.status==='running'&&s.monitor?.bridgeConnected?'●':'Ⅱ'}:memberCue(m);
+  const stateLabel=cue.label;
+  drawing+='<g data-key="node-'+esc(m.name)+'" class="node '+(m.state==='retired'&&!finished&&s.status==='running'?'inactive-node':'')+'" role="button" tabindex="'+(shown?0:-1)+'" visibility="'+(shown?'visible':'hidden')+'" aria-label="Inspect '+esc(m.name)+' · '+esc(stateLabel)+'" data-node="'+esc(m.name)+'" transform="translate('+x+' '+y+')"><title>@'+esc(m.name)+' · '+esc(stateLabel)+'</title>';
  if(isHive){const title=m.role==='coordinator'?'Coordinator':m.role==='monitor'?'Monitor':short(m.name.replace(/-/g,' '),14);
- drawing+='<polygon points="'+hex(hexR-2)+'" fill="transparent" stroke="'+(selected?'#c9d4e4':'transparent')+'" stroke-width="1.5"/><text y="-20" text-anchor="middle" fill="#e3e3e5" font-size="11" font-weight="600">'+esc(title)+'</text><text y="-8" text-anchor="middle" fill="'+(finished?'#a2c294':'#9b9ba2')+'" font-size="9">'+(m.role==='coordinator'?done+'/'+total+' done':stateLabel)+'</text><g transform="translate(-21 -2) scale(.66)">'+bee(displayBee,i,true)+'</g>'+(active?'<circle class="working-dot" cx="22" cy="15" r="2.8" fill="#9cc68b"/>':'');}
- else{drawing+='<rect x="-64" y="-13" width="128" height="26" rx="7" fill="#1b1b1e" stroke="'+(selected?'#a7b9d2':finished?'#526a49':'#393a3e')+'"/><g transform="translate(-58 -10) scale(.56)">'+bee(displayBee,i)+'</g><text x="-35" y="4" font-size="11" fill="#dedee0">'+esc(label)+'</text><circle cx="55" cy="0" r="2.8" fill="'+(finished?'#8db57e':active?'#86b9ef':m.state==='blocked'?'#d98b84':'#6e7077')+'"/>';}
+  drawing+='<polygon points="'+hex(hexR-2)+'" fill="transparent" stroke="'+(selected?'#c9d4e4':'transparent')+'" stroke-width="1.5"/><text y="-20" text-anchor="middle" fill="#e3e3e5" font-size="11" font-weight="600">'+esc(title)+'</text><text y="-8" text-anchor="middle" fill="'+(finished?'#a2c294':'#c1c1c8')+'" font-size="9">'+esc(cue.symbol+' '+stateLabel)+'</text><g transform="translate(-21 -2) scale(.66)">'+bee(displayBee,i,true)+'</g>'+(active?'<circle class="working-dot" cx="22" cy="15" r="2.8" fill="#9cc68b"/>':'');}
+  else{drawing+='<rect x="-64" y="-13" width="128" height="26" rx="7" fill="#1b1b1e" stroke="'+(selected?'#a7b9d2':finished?'#526a49':'#393a3e')+'"/><g transform="translate(-58 -10) scale(.56)">'+bee(displayBee,i)+'</g><text x="-35" y="4" font-size="10" fill="#dedee0">'+esc(short(label,10))+'</text><circle class="mention-state-badge" cx="51" cy="0" r="11" fill="'+(m.state==='blocked'?'#402527':finished?'#263526':'#262c36')+'" stroke="'+(m.state==='blocked'?'#b47773':finished?'#71946b':'#7b899f')+'" stroke-width="1"/><text class="mention-state-symbol" x="51" y="8" text-anchor="middle" font-size="23" font-weight="bold" fill="'+(m.state==='blocked'?'#efa49c':finished?'#a9d39b':'#bec9dc')+'">'+esc(cue.symbol)+'</text>';}
  drawing+='</g>';
  }
  const detail=nodes.find(m=>m.name===graphMember);
- return '<div class="graph-view" data-swarm="'+esc(s.id)+'"><section class="graph-shell '+(graphExpanded?'expanded':'')+'"><div class="timeline"><button id="first" aria-label="First post">|‹</button><button id="prev" aria-label="Previous post">‹</button><button id="play" aria-label="Play or pause">'+(playing?'Ⅱ':'▶')+'</button><button id="next" aria-label="Next post">›</button><input id="replay" type="range" min="0" max="'+s.posts.length+'" value="'+count+'" aria-label="Replay timeline"><button id="live" class="'+(replay===null?'live-button':'')+'">● Live</button></div><div class="graph-tools"><span class="counter">'+count+' of '+s.posts.length+(last?' · #'+last.id+' at '+fmt(last.at):'')+'</span><div class="segmented"><button data-mode="Hive" class="'+(isHive?'selected':'')+'">Hive</button><button data-mode="Mentions" class="'+(!isHive?'selected':'')+'">Mentions</button></div></div><div class="graph-tools secondary-tools"><button id="hideInactive" aria-pressed="'+hideInactive+'" class="subtle-button"><span class="switch '+(hideInactive?'on':'')+'"></span> Hide inactive</button><label>Speed <select id="pace"><option value=".5" '+(pace===.5?'selected':'')+'>0.5×</option><option value="1" '+(pace===1?'selected':'')+'>1×</option><option value="2" '+(pace===2?'selected':'')+'>2×</option></select></label><span class="push"></span><button id="minus" aria-label="Zoom out">−</button><button id="plus" aria-label="Zoom in"><svg class="control-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button><button id="fit" aria-label="Reset graph zoom" title="Fit graph">'+Math.round(zoomLevel*100)+'%</button><button id="zoom" aria-label="Expand">↗</button></div><div class="graph-canvas"><svg class="graph" preserveAspectRatio="xMidYMid meet" viewBox="'+view.join(' ')+'" aria-label="Swarm communication graph">'+drawing+'</svg></div><div class="legend">'+(isHive?'<span><i class="line-key green"></i> Tasks done</span><span><i class="line-key blue"></i> Message just sent</span>':'<span><i class="line-key gray"></i> Connection · arrows show direction</span><span><i class="line-key blue"></i> Latest mention · select for counts</span>')+'</div><small class="graph-note">Post history replay · recorded agent states</small>'+(last?'<article class="replay-post"><div class="post-meta"><strong>'+esc(last.from)+'</strong><span class="post-target">→ '+esc(last.to.map(x=>'@'+x).join(' '))+'</span><span class="post-time">'+fmt(last.at)+'</span></div><div class="text"><span class="kind-chip '+esc(last.kind)+'">['+esc(last.kind)+']</span> '+esc(last.text)+'</div></article>':'<article class="replay-post"><div class="post-meta"><strong>Board message</strong></div><div class="text muted">Before the first post</div></article>')+'</section>'+(detail?'<div class="card member-detail"><div class="row">'+avatar(detail,all.indexOf(detail))+'<strong>@'+esc(detail.name)+'</strong> '+status(detail.state)+'</div><p>'+esc(detail.brief||'Supervises swarm activity')+'</p>'+(detail.sessionId?'<button data-open="'+esc(detail.sessionId)+'">Open conversation</button>':'')+'</div>':'')+'</div>';
+ return '<div class="graph-view" data-swarm="'+esc(s.id)+'"><section class="graph-shell '+(graphExpanded?'expanded':'')+'"><div class="timeline"><button id="first" aria-label="First post">|‹</button><button id="prev" aria-label="Previous post">‹</button><button id="play" aria-label="Play or pause">'+(playing?'Ⅱ':'▶')+'</button><button id="next" aria-label="Next post">›</button><input id="replay" type="range" min="0" max="'+s.posts.length+'" value="'+count+'" aria-label="Replay timeline"><button id="live" class="'+(replay===null?'live-button':'')+'">● Live</button></div><div class="graph-tools"><span class="counter">'+count+' of '+s.posts.length+(last?' · #'+last.id+' at '+fmt(last.at):'')+'</span><div class="segmented"><button data-mode="Hive" class="'+(isHive?'selected':'')+'">Hive</button><button data-mode="Mentions" class="'+(!isHive?'selected':'')+'">Mentions</button></div></div><div class="graph-tools secondary-tools"><button id="hideInactive" aria-pressed="'+hideInactive+'" class="subtle-button"><span class="switch '+(hideInactive?'on':'')+'"></span> Hide inactive</button><label>Speed <select id="pace"><option value=".5" '+(pace===.5?'selected':'')+'>0.5×</option><option value="1" '+(pace===1?'selected':'')+'>1×</option><option value="2" '+(pace===2?'selected':'')+'>2×</option></select></label><span class="push"></span><button id="minus" aria-label="Zoom out">−</button><button id="plus" aria-label="Zoom in"><svg class="control-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button><button id="fit" aria-label="Reset graph zoom" title="Fit graph">'+Math.round(zoomLevel*100)+'%</button><button id="zoom" aria-label="Expand">↗</button></div><div class="graph-canvas"><svg class="graph" preserveAspectRatio="xMidYMid meet" viewBox="'+view.join(' ')+'" aria-label="Swarm communication graph">'+drawing+'</svg></div><div class="legend">'+(isHive?'<span><i class="line-key green"></i> Tasks done</span><span><i class="line-key blue"></i> Message just sent</span>':'<span><i class="line-key gray"></i> Connection · arrows show direction</span><span><i class="line-key blue"></i> Latest mention · select for counts</span>')+'</div><small class="graph-note">Post history replay · recorded agent states</small>'+(last?'<article class="replay-post"><div class="post-meta"><strong>'+esc(last.from)+'</strong><span class="post-target">→ '+esc(last.to.map(x=>'@'+x).join(' '))+'</span><span class="post-time">'+fmt(last.at)+'</span></div><div class="text"><span class="kind-chip '+esc(last.kind)+'">['+esc(last.kind)+']</span> '+esc(last.text)+'</div></article>':'<article class="replay-post"><div class="post-meta"><strong>Board message</strong></div><div class="text muted">Before the first post</div></article>')+'</section>'+(detail?'<div class="card member-detail"><div class="row">'+avatar(detail,all.indexOf(detail))+'<strong>@'+esc(detail.name)+'</strong> <span class="pill graph-member-state">'+esc(detail.role==='monitor'?(s.status==='running'?(s.monitor?.bridgeConnected?'Watching':'Standing by'):'Stopped'):memberCue(detail).label)+'</span></div><p>'+esc(detail.brief||'Supervises swarm activity')+'</p>'+(detail.sessionId?'<button data-open="'+esc(detail.sessionId)+'">Open conversation</button>':'')+'</div>':'')+'</div>';
 }
 function patchGraphElement(old,next){
  if(!old||!next||old.nodeType!==next.nodeType||old.nodeName!==next.nodeName){old?.replaceWith(next.cloneNode(true));return;}
  if(old.nodeType===3||old.nodeType===8){if(old.nodeValue!==next.nodeValue)old.nodeValue=next.nodeValue;return;}
  for(const a of [...old.attributes])if(!next.hasAttribute(a.name))old.removeAttribute(a.name);
- for(const a of [...next.attributes])if(old.getAttribute(a.name)!==a.value)old.setAttribute(a.name,a.value);
+  for(const a of [...next.attributes])if(!(a.name==='style'&&old.classList?.contains('message-pulse'))&&old.getAttribute(a.name)!==a.value)old.setAttribute(a.name,a.value);
  if(old.tagName==='INPUT'){old.value=next.value;return;}
  if(old.tagName==='SELECT'){old.value=next.value;return;}
  const keyed=new Map([...old.children].filter(x=>x.hasAttribute('data-key')).map(x=>[x.getAttribute('data-key'),x]));
@@ -96,13 +146,99 @@ function replayFrame(){
  const s=current(),old=root.querySelector('.graph-view');if(!s||!old||old.dataset.swarm!==s.id){render();return;}
  const temp=document.createElement('template');temp.innerHTML=graph(s);patchGraphElement(old,temp.content.firstElementChild);old.querySelectorAll('[data-open]').forEach(el=>el.onclick=()=>host.openSession(el.dataset.open).catch(e=>{error=e.message;render();}));
 }
+function captureRenderState(){
+ const doc=root.ownerDocument,win=doc.defaultView;
+ const settingsForm=root.querySelector('#swarmSettings');
+ if(settingsForm&&settingsOpen){
+  const values=Object.fromEntries(new FormData(settingsForm));
+  swarmSettings={...values,monitorReasoning:values.monitorReasoning==='on'};
+ }
+ const startForm=root.querySelector('#start');
+ const messageForm=root.querySelector('#message');
+ const textarea=messageForm?.querySelector('textarea');
+ const recipient=messageForm?.querySelector('select')?.value;
+ if(textarea&&renderedSwarmId)saveBoardDraft(renderedSwarmId,textarea.value,recipient||'coordinator');
+
+ const swarm=current(),draft=swarm?boardDraft(swarm.id):{text:'',to:'coordinator'};
+ const activeElement=doc.activeElement;
+ const activePost=activeElement?.closest?.('[data-post-id]');
+ const readingPost=tab==='Board'?[...root.querySelectorAll('#feed [data-post-id]')].find(el=>{
+  const bounds=el.getBoundingClientRect();
+  return bounds.bottom>0&&bounds.top<(win?.innerHeight||0);
+ }):null;
+ const preserveScroll=!resetScrollOnRender;
+ resetScrollOnRender=false;
+ return {
+  swarm,
+  startVisible:newFormOpen,
+  startDraft:startForm?.querySelector('textarea')?.value||'',
+  draft:draft.text,
+  recipient:draft.to,
+  focus:{
+   id:activeElement?.id,
+   field:activeElement?.name,
+   formId:activeElement?.form?.id,
+   selectionStart:activeElement?.selectionStart??null,
+   selectionEnd:activeElement?.selectionEnd??null,
+   selectionDirection:activeElement?.selectionDirection??'none',
+   postId:activePost?.dataset.postId,
+   postAction:activeElement?.matches?.('[data-post-action]')?activeElement.dataset.postAction:null,
+  },
+  scroll:{
+   preserve:preserveScroll,
+   x:win?.scrollX||0,
+   y:win?.scrollY||0,
+   feedTop:root.querySelector('#feed')?.scrollTop||0,
+   readingAnchor:preserveScroll&&readingPost?{id:readingPost.dataset.postId,top:readingPost.getBoundingClientRect().top}:null,
+  },
+ };
+}
+function restoreRenderState(state){
+ const {swarm,focus,scroll}=state,doc=root.ownerDocument,win=doc.defaultView;
+ const startForm=root.querySelector('#start');
+ if(startForm){if(state.startVisible)startForm.hidden=false;startForm.querySelector('textarea').value=state.startDraft;}
+ const messageForm=root.querySelector('#message');
+ if(messageForm&&swarm){
+  const textarea=messageForm.querySelector('textarea'),recipient=messageForm.querySelector('select');
+  textarea.value=state.draft;
+  recipient.value=state.recipient;
+  const submit=messageForm.querySelector('button[type="submit"],button:not([type])');
+  if(submit){
+   submit.disabled=sendingMessages.has(swarm.id);
+   if(submit.disabled)submit.setAttribute('aria-busy','true');
+   else submit.removeAttribute('aria-busy');
+  }
+ }
+ const post=focus.postId&&[...root.querySelectorAll('[data-post-id]')].find(el=>el.dataset.postId===focus.postId);
+ const postAction=post&&focus.postAction&&[...post.querySelectorAll('[data-post-action]')].find(el=>el.dataset.postAction===focus.postAction);
+ const focusTarget=postAction||post||(focus.id?doc.getElementById(focus.id):focus.formId&&focus.field?doc.getElementById(focus.formId)?.elements.namedItem(focus.field):null);
+ if(focusTarget){
+  focusTarget.focus({preventScroll:true});
+  if(focus.selectionStart!==null&&focusTarget.setSelectionRange){
+   try{focusTarget.setSelectionRange(focus.selectionStart,focus.selectionEnd??focus.selectionStart,focus.selectionDirection);}catch{}
+  }
+ }
+ const scrollToLatest=tab==='Board'&&swarm&&(followScroll||jumpLatest);
+ if(scrollToLatest){
+  root.querySelector('#feed .board-post:last-of-type')?.scrollIntoView({block:'nearest'});
+  followScroll=false;
+  jumpLatest=false;
+ }else if(!scroll.preserve)win?.scrollTo(0,0);
+ else if(scroll.readingAnchor){
+  const anchor=[...root.querySelectorAll('[data-post-id]')].find(el=>el.dataset.postId===scroll.readingAnchor.id);
+  if(anchor)win?.scrollBy(0,anchor.getBoundingClientRect().top-scroll.readingAnchor.top);
+  else win?.scrollTo(scroll.x,scroll.y);
+ }else win?.scrollTo(scroll.x,scroll.y);
+ const feed=root.querySelector('#feed');
+ if(feed)feed.scrollTop=scroll.preserve?scroll.feedTop:0;
+}
 function render(){
- const settingsDraft=root.querySelector('#swarmSettings')?Object.fromEntries(new FormData(root.querySelector('#swarmSettings'))):null;if(settingsDraft&&settingsOpen)swarmSettings={...settingsDraft,monitorReasoning:settingsDraft.monitorReasoning==='on'};const startForm=root.querySelector('#start'),startVisible=newFormOpen,startDraft=startForm?.querySelector('textarea')?.value||'',previous=root.querySelector('#message textarea'),draft=previous?.value||'',to=root.querySelector('#message select')?.value,active=document.activeElement?.id,field=document.activeElement?.name,formId=document.activeElement?.form?.id,selection=document.activeElement?.selectionStart??null;
- const s=current();root.innerHTML='<div class="sticky-top"><header><div class="header-title">'+bee({role:'coordinator',state:s?.status==='running'?'active':'waiting'})+'<span>'+ (s?esc(s.title):'Swarm')+'</span>'+'</div><div class="header-actions">'+(s?status(s.status):'')+'<button id="settings" class="subtle-button" title="Swarm model settings" aria-label="Swarm model settings"><svg class="control-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 3v3m0 12v3M3 12h3m12 0h3M5.6 5.6l2 2m8.8 8.8 2 2m0-12.8-2 2m-8.8 8.8-2 2"/></svg></button><button id="refresh" class="subtle-button" title="Refresh" aria-label="Refresh"><svg class="control-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 9a8 8 0 1 0 0 6M20 4v5h-5"/></svg></button>'+(s?'<button id="delete" class="subtle-button" title="Delete swarm" aria-label="Delete swarm"><svg class="control-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M7 7l1 14h8l1-14M10 11v6m4-6v6"/></svg></button><button id="new" class="subtle-button" title="New swarm" aria-label="New swarm">+</button>':'')+(s?.status==='running'?'<button id="stop" class="subtle-button" title="Stop swarm" aria-label="Stop swarm"><svg class="control-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/></svg></button>':'')+'</div></header>'+(s?'<nav class="tabs">'+['Overview','Board','Members','Graph'].map(t=>'<button data-tab="'+t+'" class="'+(tab===t?'selected':'')+'">'+t+(t==='Board'?'<span>'+s.posts.length+'</span>':t==='Members'?'<span>'+s.members.filter(m=>m.state!=='retired').length+'</span>':'')+'</button>').join('')+'</nav>':'')+'</div>'+(error?'<div class="notice error">'+esc(error)+'</div>':'')+'<main>'+(deleteConfirm&&s?'<section class="card confirm-card"><h2>Delete '+esc(s.key)+'?</h2><p>Stops the swarm and removes its board and graph history. Chat conversations and files are kept.</p><div class="row"><button id="confirmDelete" class="danger-button">Delete swarm</button><button id="cancelDelete">Cancel</button></div></section>':'')+(stopConfirm&&s?'<section class="card confirm-card"><h2>Stop swarm?</h2><p>Interrupts agents and preserves the board.</p><div class="row"><button id="confirmStop" class="danger-button">Stop swarm</button><button id="cancelStop">Cancel</button></div></section>':'')+(settingsOpen?'<form id="swarmSettings" class="card settings-card"><h2>Swarm models</h2><p class="muted">Leave each role blank to inherit the model selected when starting /swarm. Overrides apply to new swarms.</p>'+['coordinator','worker','verifier','monitor'].map(role=>'<label>'+role[0].toUpperCase()+role.slice(1)+' model<input name="'+role+'Model" list="swarm-models" value="'+esc(swarmSettings[role+'Model'])+'" placeholder="Inherit launch model"></label>').join('')+'<label class="monitor-toggle"><input type="checkbox" name="monitorReasoning" '+(swarmSettings.monitorReasoning?'checked':'')+'> AI advisory review when stalled</label><p class="muted">Health checks and wake-ups always run without model calls. Enable advisory review to use the monitor model on a stall.</p><datalist id="swarm-models">'+availableModels.map(m=>'<option value="'+esc(m.id)+'">'+esc(m.name)+'</option>').join('')+'</datalist><div class="row"><button class="primary">Save</button><button type="button" id="cancelSettings">Cancel</button></div></form>':'')+(!s?'<h1>Start a swarm</h1><p class="muted">Choose a model in the chat composer, then send /swarm.</p>':(swarms.length>1?'<div class="swarm-switch"><select id="swarmSelect">'+swarms.map(x=>'<option value="'+esc(x.id)+'" '+(x.id===s.id?'selected':'')+'>'+esc(x.key+' · '+x.title)+'</option>').join('')+'</select></div>':'')+({Overview:overview,Board:board,Members:members,Graph:graph}[tab](s)))+'<form id="start" class="card start-card" '+(s?'hidden':'')+'><h2>New swarm</h2><p class="muted">'+esc(directory||'Open a project')+' · '+esc(session?.title||'New coordinator conversation')+'</p><textarea name="task" required maxlength="12000" placeholder="Describe the task and acceptance criteria"></textarea><button class="primary" '+(!directory||session?.busy?'disabled':'')+'>Prepare /swarm</button>'+(session?.busy?'<small> Wait for current turn to finish.</small>':'')+'</form></main>';
- if(tab==='Board'&&s&&s.posts.length>lastFeedCount&&follow){lastFeedCount=s.posts.length;root.querySelector('#feed')?.lastElementChild?.scrollIntoView({block:'nearest'});}
- if(root.querySelector('#start')){if(startVisible)root.querySelector('#start').hidden=false;root.querySelector('#start textarea').value=startDraft;}
- if(previous&&root.querySelector('#message textarea')){root.querySelector('#message textarea').value=draft;if(to)root.querySelector('#message select').value=to;}
- const focus=active?document.getElementById(active):formId&&field?document.getElementById(formId)?.elements.namedItem(field):null;if(focus){focus.focus({preventScroll:true});if(selection!==null&&focus.setSelectionRange)try{focus.setSelectionRange(selection,selection);}catch{}}
+ const state=captureRenderState(),s=state.swarm;
+ if(tab==='Board'&&s&&jumpLatest){lastFeedCount=s.posts.length;newPosts=0;}
+ if(tab==='Board'&&s&&jumpLatest){lastFeedCount=s.posts.length;newPosts=0;}
+ root.innerHTML='<div class="sticky-top"><header><div class="header-title">'+bee({role:'coordinator',state:s?.status==='running'?'active':'waiting'})+'<span>'+ (s?esc(s.title):'Swarm')+'</span>'+'</div><div class="header-actions">'+(s?status(s.status):'')+'<button id="settings" class="subtle-button" title="Swarm model settings" aria-label="Swarm model settings"><svg class="control-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 3v3m0 12v3M3 12h3m12 0h3M5.6 5.6l2 2m8.8 8.8 2 2m0-12.8-2 2m-8.8 8.8-2 2"/></svg></button><button id="refresh" class="subtle-button" title="Refresh" aria-label="Refresh"><svg class="control-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 9a8 8 0 1 0 0 6M20 4v5h-5"/></svg></button>'+(s?'<button id="delete" class="subtle-button" title="Delete swarm" aria-label="Delete swarm"><svg class="control-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M7 7l1 14h8l1-14M10 11v6m4-6v6"/></svg></button><button id="new" class="subtle-button" title="New swarm" aria-label="New swarm">+</button>':'')+(s?.status==='running'?'<button id="stop" class="subtle-button" title="Stop swarm" aria-label="Stop swarm"><svg class="control-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/></svg></button>':'')+'</div></header>'+(s?'<nav class="tabs">'+['Overview','Board','Members','Graph'].map(t=>'<button data-tab="'+t+'" class="'+(tab===t?'selected':'')+'">'+t+(t==='Board'?'<span>'+s.posts.length+'</span>':t==='Members'?'<span>'+s.members.filter(m=>m.state!=='retired').length+'</span>':'')+'</button>').join('')+'</nav>':'')+'</div>'+(error?'<div class="notice error">'+esc(error)+'</div>':'')+'<main>'+(deleteConfirm&&s?'<section class="card confirm-card"><h2>Delete '+esc(s.key)+'?</h2><p>Stops the swarm and removes its board and graph history. Chat conversations and files are kept.</p><div class="row"><button id="confirmDelete" class="danger-button">Delete swarm</button><button id="cancelDelete">Cancel</button></div></section>':'')+(stopConfirm&&s?'<section class="card confirm-card"><h2>Stop swarm?</h2><p>Interrupts agents and preserves the board.</p><div class="row"><button id="confirmStop" class="danger-button">Stop swarm</button><button id="cancelStop">Cancel</button></div></section>':'')+(settingsOpen?'<form id="swarmSettings" class="card settings-card"><h2>Swarm models</h2><p class="muted">Leave each role blank to inherit the model selected when starting /swarm. Overrides apply to new swarms.</p>'+['coordinator','worker','verifier','monitor'].map(role=>'<label>'+role[0].toUpperCase()+role.slice(1)+' model<input name="'+role+'Model" list="swarm-models" value="'+esc(swarmSettings[role+'Model'])+'" placeholder="Inherit launch model"></label>').join('')+'<label class="monitor-toggle"><input type="checkbox" name="monitorReasoning" '+(swarmSettings.monitorReasoning?'checked':'')+'> AI advisory review when stalled</label><p class="muted">Health checks and wake-ups always run without model calls. Enable advisory review to use the monitor model on a stall.</p><datalist id="swarm-models">'+availableModels.map(m=>'<option value="'+esc(m.id)+'">'+esc(m.name)+'</option>').join('')+'</datalist><div class="row"><button class="primary">Save</button><button type="button" id="cancelSettings">Cancel</button></div></form>':'')+(!s?'<h1>Start a swarm</h1><p class="muted">Choose a model in the chat composer, then send /swarm.</p>':(swarms.length>1?'<div class="swarm-switch"><select id="swarmSelect">'+swarms.map(x=>'<option value="'+esc(x.id)+'" '+(x.id===s.id?'selected':'')+'>'+esc(x.key+' · '+x.title)+'</option>').join('')+'</select></div>':'')+({Overview:overview,Board:board,Members:members,Graph:graph}[tab](s)))+'<form id="start" class="card start-card" '+(s?'hidden':'')+'><h2>New swarm</h2><p class="muted">'+esc(directory||'Open a project')+' · '+esc(session?.title||'New coordinator conversation')+'</p><textarea name="task" required maxlength="12000" placeholder="Describe the task and acceptance criteria"></textarea><button class="primary" '+(!directory||session?.busy?'disabled':'')+'>Prepare /swarm</button>'+(session?.busy?'<small> Wait for current turn to finish.</small>':'')+'</form></main>';
+ renderedSwarmId=s?.id||'';
+ restoreRenderState(state);
  root.querySelector('#refresh').onclick=refresh;
  root.querySelector('#settings')?.addEventListener('click',async()=>{try{settingsOpen=!settingsOpen;if(settingsOpen){swarmSettings=await api('/settings');render();api('/models',null,{directory:directory||''}).then(models=>{if(Array.isArray(models)){availableModels=models;if(settingsOpen)render();}}).catch(()=>{});}else render();}catch(e){error=e.message;render();}});
  root.querySelector('#cancelSettings')?.addEventListener('click',()=>{settingsOpen=false;render();});
@@ -116,7 +252,7 @@ function render(){
  root.querySelector('#confirmDelete')?.addEventListener('click',async()=>{deleteConfirm=false;await action('/delete',{id:s.id});render();});
  root.querySelector('#cancelStop')?.addEventListener('click',()=>{stopConfirm=false;render();});
  root.querySelector('#confirmStop')?.addEventListener('click',async()=>{stopConfirm=false;await action('/stop',{id:s.id});render();});
- root.querySelectorAll('[data-tab]').forEach(el=>el.onclick=()=>{clearInterval(timer);playing=false;tab=el.dataset.tab;graphExpanded=false;render();});
+ root.querySelectorAll('[data-tab]').forEach(el=>el.onclick=()=>{clearInterval(timer);playing=false;tab=el.dataset.tab;resetScrollOnRender=true;if(tab==='Board'&&follow)followScroll=true;graphExpanded=false;render();if(tab==='Board')root.querySelector('#board-view')?.focus({preventScroll:true});});
  root.querySelectorAll('[data-mode]').forEach(el=>el.onclick=()=>{mode=el.dataset.mode;render();});
  root.querySelectorAll('[data-node]').forEach(el=>{el.onclick=()=>{graphMember=graphMember===el.dataset.node?'':el.dataset.node;render();};el.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();el.click();}};});
  root.querySelector('#zoom')?.addEventListener('click',()=>{graphExpanded=!graphExpanded;render();});
@@ -126,14 +262,68 @@ function render(){
  root.querySelector('#fit')?.addEventListener('click',()=>{zoomLevel=1;replayFrame();});
  root.querySelector('#first')?.addEventListener('click',()=>{replay=0;replayFrame();});
  root.querySelector('#pace')?.addEventListener('change',e=>{pace=Number(e.target.value);if(playing){clearInterval(timer);playing=false;}render();});
- root.querySelectorAll('[data-open]').forEach(el=>{el.onclick=e=>{if(e.target.closest('[data-retry]'))return;host.openSession(el.dataset.open).catch(e=>{error=e.message;render();});};el.onkeydown=e=>{if(e.key==='Enter'&&e.target===el)el.click();};});
+ root.querySelectorAll('[data-open]').forEach(el=>{el.onclick=e=>{if(e.target.closest('[data-retry],[data-open-chat]'))return;host.openSession(el.dataset.open).catch(e=>{error=e.message;render();});};el.onkeydown=e=>{if((e.key==='Enter'||e.key===' ')&&e.target===el){e.preventDefault();el.click();}};});
+ root.querySelectorAll('[data-open-chat]').forEach(el=>el.onclick=e=>{e.stopPropagation();host.openSession(el.dataset.openChat).catch(e=>{error=e.message;render();});});
  root.querySelectorAll('[data-expand]').forEach(el=>el.onclick=()=>{const id=Number(el.dataset.expand);expandedPosts.has(id)?expandedPosts.delete(id):expandedPosts.add(id);render();});
  root.querySelectorAll('[data-retry]').forEach(el=>el.onclick=()=>action('/retry',{id:s.id,name:el.dataset.retry}));
- root.querySelector('#follow')?.addEventListener('click',()=>{follow=!follow;render();});
- root.querySelector('#memberSearch')?.addEventListener('input',e=>{memberSearch=e.target.value;render();root.querySelector('#memberSearch')?.focus();});
+ root.querySelector('#follow')?.addEventListener('click',()=>{follow=!follow;if(follow&&s){lastFeedCount=s.posts.length;newPosts=0;followScroll=true;}render();});
+ root.querySelector('#new-posts')?.addEventListener('click',()=>{jumpLatest=true;render();});
+ root.querySelector('#memberSearch')?.addEventListener('input',e=>{memberSearch=e.target.value;render();});
  root.querySelector('#filter')?.addEventListener('input',e=>{filter=e.target.value;render();});
  root.querySelector('#memberFilter')?.addEventListener('change',e=>{memberFilter=e.target.value;render();});
- root.querySelector('#message')?.addEventListener('submit',async e=>{e.preventDefault();const f=new FormData(e.target);const body={id:s.id,to:f.get('to'),text:f.get('text')};e.target.reset();await action('/message',body);});
+ root.querySelector('#message select')?.addEventListener('change',e=>{
+  saveBoardDraft(s.id,root.querySelector('#message textarea')?.value||'',e.target.value);
+ });
+ root.querySelector('#message textarea')?.addEventListener('input',e=>{
+  saveBoardDraft(s.id,e.target.value,root.querySelector('#message select')?.value||'coordinator');
+ });
+ root.querySelector('#message')?.addEventListener('submit',async e=>{
+  e.preventDefault();
+  const swarmId=s.id;
+  if(sendingMessages.has(swarmId))return;
+  const values=new FormData(e.currentTarget);
+  const body={id:swarmId,to:values.get('to'),text:values.get('text')};
+  if(!body.text.trim())return;
+  const submittedDraft=saveBoardDraft(swarmId,body.text,body.to);
+  const submit=e.currentTarget.querySelector('button[type="submit"],button:not([type])');
+  sendingMessages.add(swarmId);
+  if(submit){submit.disabled=true;submit.setAttribute('aria-busy','true');}
+  try{
+   await api('/message',body);
+   if(boardDraft(swarmId).revision===submittedDraft.revision){
+    saveBoardDraft(swarmId,'',body.to);
+    if(current()?.id===swarmId&&tab==='Board'){
+     const textarea=root.querySelector('#message textarea');
+     if(textarea&&textarea.value===body.text)textarea.value='';
+    }
+   }
+   error='';
+   await refresh();
+  }catch(err){error=err.message;render();}
+  finally{
+   sendingMessages.delete(swarmId);
+   if(current()?.id===swarmId){
+    const currentSubmit=root.querySelector('#message button[type="submit"],#message button:not([type])');
+    if(currentSubmit){currentSubmit.disabled=false;currentSubmit.removeAttribute('aria-busy');}
+   }
+  }
+ });
+ root.querySelector('#board-view')?.addEventListener('click',e=>{if(e.target===e.currentTarget){e.currentTarget.focus({preventScroll:true});return;}const post=e.target.closest('.board-post');if(post&&!e.target.closest('button,a,input,select,textarea'))post.focus({preventScroll:true});});
+ root.querySelector('#board-view')?.addEventListener('keydown',e=>{
+  const boardView=e.currentTarget,target=e.target;
+   if(e.ctrlKey||e.metaKey||e.altKey)return;
+   if(target.matches('input,textarea,select,button,a,[contenteditable="true"]'))return;
+  const posts=[...boardView.querySelectorAll('.board-post')],focused=target.closest('[data-post-id]'),index=posts.indexOf(focused);
+  if(e.key==='Escape'){e.preventDefault();boardView.focus({preventScroll:true});return;}
+  if(e.key==='f'){e.preventDefault();follow=!follow;if(follow&&s){lastFeedCount=s.posts.length;newPosts=0;followScroll=true;}render();return;}
+  if(e.key==='o'){e.preventDefault();(focused||posts.at(-1))?.querySelector('[data-open-chat]')?.click();return;}
+  let next=-1;
+  if(e.key==='j')next=index<0?0:Math.min(posts.length-1,index+1);
+  else if(e.key==='k')next=index<0?posts.length-1:Math.max(0,index-1);
+  else if(e.key==='g')next=0;
+  else if(e.key==='G')next=posts.length-1;
+  if(next>=0&&posts[next]){e.preventDefault();posts[next].focus({preventScroll:true});posts[next].scrollIntoView({block:'nearest'});}
+ });
  root.querySelector('#prev')?.addEventListener('click',()=>{replay=Math.max(0,(replay??current().posts.length)-1);replayFrame();});
  root.querySelector('#next')?.addEventListener('click',()=>{replay=Math.min(current().posts.length,(replay??current().posts.length)+1);replayFrame();});
  root.querySelector('#replay')?.addEventListener('input',e=>{clearInterval(timer);playing=false;replay=Number(e.target.value);replayFrame();});

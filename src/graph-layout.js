@@ -28,6 +28,35 @@ export function collectEdges(posts,visible){
  for(const p of posts)for(const to of p.to){if(p.from===to||!visible.has(p.from)||!visible.has(to))continue;const [a,b]=[p.from,to].sort(),key=JSON.stringify([a,b]);let e=pairs.get(key);if(!e){e={a,b,ab:0,ba:0};pairs.set(key,e);}e[p.from===a?'ab':'ba']++;}
  return [...pairs.values()];
 }
+// Retain only short-lived event pulses. A newly opened graph and a return to
+// Live establish a baseline; neither should animate the existing backlog.
+export function graphMotion(previous,swarm,posts,replay,now=Date.now()){
+ const count=replay===null?posts.length:Math.max(0,Math.min(replay,posts.length));
+ const same=previous?.swarm===swarm,mode=replay===null?'live':'replay';
+ let pulses=same?previous.pulses.filter(p=>p.until>now):[];
+ if(same&&mode==='replay'&&(previous.mode!=='replay'||previous.count!==count)){
+  pulses=count?[{post:posts[count-1],until:now+1400}]:[];
+ }else if(same&&mode==='live'&&previous.mode==='replay'){
+  pulses=[];
+ }else if(same&&mode==='live'){
+  const index=previous.lastId==null?-1:posts.findIndex(p=>p.id===previous.lastId);
+  if((index>=0||previous.length===0)&&posts.length>previous.length){
+   pulses.push(...posts.slice(index+1).map(post=>({post,until:now+1400})));
+  }
+ }
+ return {swarm,mode,count,length:posts.length,lastId:posts.at(-1)?.id??null,pulses};
+}
+// The symbol makes the cue recognizable without relying on color alone.
+export function memberCue(member){
+ if(member.state==='blocked')return {label:'Needs attention',symbol:'!'};
+ if(member.state==='retired')return {label:'Retired',symbol:'−'};
+ if(member.taskState==='verified')return {label:'Verified',symbol:'✓'};
+ if(member.taskState==='reported')return {label:'Reported',symbol:'✓'};
+ if(member.state==='waiting')return {label:'Standing by',symbol:'Ⅱ'};
+ if(member.state==='dispatching')return {label:'Waking',symbol:'◌'};
+ if(member.state==='active')return {label:'Working',symbol:'●'};
+ return {label:'Standing by',symbol:'Ⅱ'};
+}
 export function edgeGeometry(from,to,halfWidth=68,halfHeight=16){
  const [x,y]=from,[u,v]=to,dx=u-x,dy=v-y;
  if(dx===0&&halfWidth>=64){

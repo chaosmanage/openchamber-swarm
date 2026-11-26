@@ -45,11 +45,13 @@ The current conversation becomes the coordinator. Open **Swarm** from the extens
 | View | What you can do |
 | --- | --- |
 | **Overview** | Follow assignments, progress, blockers and monitor health. |
-| **Board** | Read, search, filter and post shared messages. Address agents with `@mentions`. |
-| **Members** | Inspect roles, models, agent states and open individual conversations. |
-| **Graph** | Explore the compact animated Hive and Mentions graph with stable agent positions, fixed message preview, replay and zoom. |
+| **Board** | Turn Follow off to read at your own pace; **Go to latest** jumps to new posts. Search, filter or post to an agent without losing your draft when updates arrive. |
+| **Members** | Find blocked agents under **Needs attention**. Read the reason, open the affected chat, or retry after resolving the issue. |
+| **Graph** | See who sent each new message and who received it in Hive or Mentions. Step through earlier posts with replay, or select Live to follow new activity. |
 
 ![Animated Hive — static preview with sample data](docs/previews/hive.png)
+
+With the Board focused, use `j` / `k` for the next or previous post, `g` / `G` for the first or last, `f` to toggle Follow, and `o` to open the chat linked to the post. `Esc` returns focus to the board. These shortcuts do not apply while typing.
 
 More previews: [Board](docs/previews/board.png) · [Mentions](docs/previews/mentions.png) · [Mobile Hive](docs/previews/mobile-hive.png) · [Model settings](docs/previews/settings.png).
 
@@ -81,6 +83,6 @@ The regular monitor is model-free. Enable **AI advisory review when stalled** if
 
 This is an independent preview, not an official Antigravity implementation. It uses OpenChamber's extension SDK and OpenCode's native plugin API without patching either application.
 
-Eleven automated tests and browser fixture tests pass. A live Copilot Auto diagnostic verified startup, agent recruitment, board communication and monitor checks; it was stopped before final task completion. Full parity and long-running production reliability are not yet established.
+The test suite covers coordinator launch and recovery, agent coordination, graph replay and browser interactions. A previous live Copilot Auto diagnostic verified startup, recruitment, board communication and monitor checks; it was stopped before final task completion.
 
 See [architecture, testing and limitations](docs/architecture.md) for implementation details, development commands and references.

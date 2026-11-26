@@ -401,6 +401,7 @@ function modelRef(value) {
   return providerID && id.join("/") ? { providerID, id: id.join("/") } : undefined;
 }
 var modelName = (r) => r?.providerID && r?.id ? r.providerID + "/" + r.id : "";
+var seedUncertain = "Initial prompt delivery is uncertain. Inspect the conversation, then use Retry; it reuses the same message ID. If the prompt was cancelled or removed, Retry may start a new turn.";
 for (const s of state.swarms) {
   s.monitor ??= { checks: 0, lastCheck: 0, nextCheck: 0, action: "Starting", lastAction: 0 };
   s.history ??= [];
@@ -410,10 +411,24 @@ for (const s of state.swarms) {
   s.monitorModel ??= "";
   s.monitorReasoning ??= false;
   s.launchModel ??= s.members[0].model || "";
+  const first = s.posts[0];
+  if (!s.launchPostId && first?.id === 1 && first.from === "user" && first.kind === "brief" && first.to.includes("coordinator") && first.text === s.task)
+    s.launchPostId = first.id;
   for (const m of s.members) {
     m.acked ??= [];
-    m.seeded ??= !!(m.initialized && (m.lastPost || m.lastReply || m.state !== "blocked"));
-    if (m.state === "dispatching") {
+    m.seeded ??= !!m.initialized;
+    if (m.role === "coordinator" && s.launchPostId) {
+      m.queue = m.queue.filter((id) => id !== s.launchPostId);
+      m.acked = [...new Set([...m.acked, s.launchPostId])];
+      if (!m.seeded)
+        m.launchPending = true;
+    }
+    if (m.state === "dispatching" && !m.seeded)
+      m.seedPending = true;
+    if (m.seedPending && !m.seeded && m.state !== "retired") {
+      m.state = "blocked";
+      m.error = seedUncertain;
+    } else if (m.state === "dispatching") {
       m.state = "waiting";
       m.error = "Recovering interrupted dispatch";
     }
@@ -434,7 +449,7 @@ async function pump() {
       continue;
     for (const m of s.members) {
       const k = s.id + ":" + m.name;
-      if (inFlight.has(k) || m.state !== "waiting" || !m.queue.length || Date.now() < (m.retryAt || 0))
+      if (inFlight.has(k) || m.state !== "waiting" || !m.queue.length && !((m.launchPending || m.seedPending) && !m.seeded) || Date.now() < (m.retryAt || 0))
         continue;
       if (!plugins.has(normalizeDir(s.directory)) || Date.now() - plugins.get(normalizeDir(s.directory)) > 15000) {
         m.error = "Waiting for OpenCode project bridge";
@@ -534,8 +549,12 @@ async function pump() {
             return;
           const notice = "Swarm board update. Your assignment and addressed board posts are provided automatically in internal context. Use swarm_read only for additional history. End your turn when waiting.";
           if (!m.seeded) {
+            m.seedPending = true;
+            persist(s);
             await native("seed", { sessionID: m.sessionId, id: stableId("msg_", s.id + ":" + m.name + ":seed"), text: m.role === "coordinator" ? s.task : "Start your " + m.role + " assignment. Read the internal swarm context and follow the board.", metadata: { swarm: s.key, initial: true }, delivery: "queue", resume: true }, s.directory);
             m.seeded = true;
+            m.seedPending = false;
+            m.launchPending = false;
           } else
             await native("wake", { sessionID: m.sessionId, id: stableId("msg_", s.id + ":" + m.name + ":" + ids.join(",") + ":" + dispatchSeq), text: notice, description: "Swarm · " + ids.length + " board " + (ids.length === 1 ? "mention" : "mentions"), metadata: { swarm: s.key, posts: ids }, delivery: "queue", resume: true }, s.directory);
           m.initialized = true;
@@ -556,7 +575,7 @@ async function pump() {
         } catch (e) {
           if (m.state !== "retired")
             m.state = "blocked";
-          m.error = String(e.message || e);
+          m.error = m.seedPending ? seedUncertain + " " + String(e.message || e) : String(e.message || e);
           m.retryAt = Date.now() + 15000;
           persist(s);
         } finally {
@@ -568,8 +587,12 @@ async function pump() {
   }
 }
 function begin(b) {
-  if (locate(b.sessionId))
+  const existing = locate(b.sessionId);
+  if (existing) {
+    if (existing.m.role === "coordinator" && normalizeDir(existing.s.directory) === normalizeDir(b.directory) && typeof b.task === "string" && existing.s.task === b.task.trim())
+      return { ...publicSwarm(existing.s), alreadyStarted: true };
     throw Error("Current conversation already belongs to a running swarm");
+  }
   const s = createSwarm({ ...b, number: state.next++ });
   Object.assign(s, state.settings);
   s.launchModel = modelName(modelRef(b.modelRef) || modelRef(b.model));
@@ -584,8 +607,10 @@ function begin(b) {
     m.modelRef = modelRef(s.coordinatorModel);
   }
   m.state = "waiting";
-  m.acked = [];
-  appendPost(s, "user", ["coordinator"], s.task, "brief");
+  m.launchPending = true;
+  const brief = appendPost(s, "user", ["coordinator"], s.task, "brief", false);
+  s.launchPostId = brief.id;
+  m.acked = [brief.id];
   state.swarms.push(s);
   persist(s);
   mark(s, m);
@@ -673,7 +698,7 @@ function ack(s, m, ids) {
     m.read = Math.max(m.read || 0, ...accepted);
 }
 function snapshot(s, m) {
-  const addressed = s.posts.filter((p) => p.to.includes(m.name) && p.from !== m.name);
+  const addressed = s.posts.filter((p) => p.to.includes(m.name) && p.from !== m.name && !(m.role === "coordinator" && p.id === s.launchPostId));
   const unseen = addressed.filter((p) => !(m.acked || []).includes(p.id)), recent = addressed.slice(-5), chosen = [];
   let budget = 42000;
   for (const p of [...unseen, ...recent.filter((p) => !unseen.includes(p))]) {
@@ -725,7 +750,7 @@ function event(b) {
       idle(s, m, b.content?.reply);
   } else if (e.type === "turn-failed") {
     m.state = "blocked";
-    m.error = b.content?.error?.message || "Turn failed";
+    m.error = m.seedPending ? seedUncertain : b.content?.error?.message || "Turn failed";
   } else if (e.type === "permission-asked" || e.type === "question-asked") {
     m.state = "blocked";
     m.error = e.type === "permission-asked" ? "Tool approval required" : "User input required";
@@ -782,7 +807,7 @@ async function reconcile() {
       monitor.bridgeConnected = now - (plugins.get(normalizeDir(s.directory)) || 0) < 15000;
       const errors = [];
       for (const m of s.members) {
-        if (!m.sessionId || m.state === "retired" || inFlight.has(s.id + ":" + m.name))
+        if (!m.sessionId || m.state === "retired" || m.seedPending && m.state === "blocked" || inFlight.has(s.id + ":" + m.name))
           continue;
         try {
           const { status } = await host.sessions.status(m.sessionId);
@@ -994,7 +1019,7 @@ var server = http.createServer(async (req, res) => {
       m.retryAt = 0;
       m.missedWake = 0;
       m.refreshModel = !!m.sessionId;
-      if (!m.queue.length)
+      if (!m.queue.length && !m.launchPending && !m.seedPending)
         appendPost(s, "user", [m.name], "Resume after the failure; inspect the board and continue.", "retry");
       persist(s);
       schedule();

@@ -12,6 +12,12 @@
 
 Deletion: use the trash icon to stop and remove a swarm while keeping chat sessions/files. A native coordinator session-deleted event removes the associated swarm and stops its members. The tab bar stays pinned while scrolling. Old records whose chat was deleted before the extension subscribed to deletion events can be removed with the trash icon.
 
+### Coordinator launch and recovery
+
+The panel prepares `/swarm <task>` in the composer. Sending the command starts the swarm with the selected model and variant. The service records the first brief on the public board and sends the task as the coordinator’s first normal prompt. That brief does not also wake the coordinator. Subsequent instructions are delivered normally, even if their text matches the original task.
+
+Repeating the same launch command in the same coordinator session reuses the swarm. If the service loses confirmation of the first prompt, it marks the member as needing attention. Inspect its chat before choosing **Retry**: Retry uses the same message ID, but can start another turn if the original prompt was cancelled or removed.
+
 ## Tests
 ```sh
 npm install --ignore-scripts
@@ -20,13 +26,15 @@ npm test
 bun node_modules/@openchamber/sdk/scripts/check-guest.ts .
 ```
 
+Run `node tests/browser-smoke.cjs` with Playwright and Chromium installed to test the built panel. The fixture accepts `PLAYWRIGHT_MODULE` and `PLAYWRIGHT_CHROMIUM` for installations outside the project.
+
 The automated suite covers fresh coordinator creation, model inheritance, project isolation, implicit board delivery to active agents, sleeping wake-ups, deferred verifier activation, monitor stall reminders, restart persistence, settings and deletion; a separate test invokes the bundled plugin hooks and tools with a native API test double. Integration tests also exercise the coordinator model switch, separate worker/verifier models and the AI monitor advisory model. It does not call a real model. The SDK package check validates extension structure. A Chromium fixture smoke test covered Overview, Board, Members, Hive, Mentions, node selection and mobile rendering. A live Copilot Auto diagnostic recruited two workers and a verifier, exchanged 12 posts, observed sleeping agents resume, and completed three monitor checks without provider errors. It was stopped before task completion. Full end-to-end completion and long-run soak testing remain outstanding.
 
 ## Differences from Antigravity / next work
 - Monitor has deterministic periodic health checks and stall recovery plus optional stateless AI advisory reviews on stalls. It is not a persistent monitor conversation; review results are posted to the board and wake the coordinator. The optional review can consume provider quota.
 - Shared workspace only, with advisory path assignments. No per-worker worktree creation/merge or context forks. Role model overrides are captured at launch; retry can adopt a model changed in the member chat.
 - Graph replay reflects historical posts and newly recorded member state transitions; older swarms lack a complete historical state log. No GIF export. The rail icon is a bee. The Hive uses original color-coded side-view pixel bees with hinged flapping wings, hovering and sleeping animations (reduced-motion supported), tightly packed task hexagons, green completion outlines and blue recent-message paths. The entire pane uses a neutral near-black Antigravity-style palette, compact text tabs and flat member/board rows. It is not a pixel-identical clone.
-- No full-screen native OpenCode TUI board, native status line or AGY keyboard parity. /swarm uses the native OpenCode command path so the composer selection is applied before swarm creation. The native API test double verifies the invocation model/variant, concise generated title, and parent linkage. A full provider run remains unverified.
+- The extension panel supports post navigation, Follow, and opening chats from the keyboard. There is no native OpenCode TUI board or terminal status line. `/swarm` uses the native command path so the composer selection is applied before swarm creation. The native API test double verifies the invocation model/variant, concise generated title, and parent linkage. A full provider run remains unverified.
 - Quota failures and permission/question events block the member and require manual review/retry; no dedicated quota-specific resume policy. No automatic permission approval.
 - State writes are atomic but host session operations and state are not transactional. Interrupted dispatches retain pending posts and retry with bounded wake attempts; unresolved failures block for inspection. A single OpenChamber instance and same-user OpenCode runtime are assumed: the local bridge discovery file is per-user. The service and plugin must share filesystem and loopback access. Local same-user processes can access the bearer; it is not an OS security boundary.
 - Hard limits: 12 members, 500 board posts, 100 dispatched turns per swarm; OpenChamber additionally imposes session prompt limits. Budget exhaustion pauses the swarm; resume UI is not yet implemented.
