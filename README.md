@@ -2,7 +2,7 @@
 
 Collaborative coding agents for [OpenChamber](https://github.com/openchamber/openchamber), inspired by Google Antigravity Swarms. A coordinator delegates work to independent agents, who communicate through a shared board, sleep when idle, and wake when needed.
 
-**Preview · v0.4.5** · OpenChamber 2.8.0+ · Tested with OpenCode 2.4.2
+**Preview · v0.4.6** · OpenChamber 2.8.0+ · Tested with OpenCode 2.4.2
 
 ## Installation
 
@@ -81,6 +81,6 @@ The regular monitor is model-free. Enable **AI advisory review when stalled** if
 
 This is an independent preview, not an official Antigravity implementation. It uses OpenChamber's extension SDK and OpenCode's native plugin API without patching either application.
 
-Nine automated tests and browser fixture tests pass. A live Copilot Auto diagnostic verified startup, agent recruitment, board communication and monitor checks; it was stopped before final task completion. Full parity and long-running production reliability are not yet established.
+Ten automated tests and browser fixture tests pass. A live Copilot Auto diagnostic verified startup, agent recruitment, board communication and monitor checks; it was stopped before final task completion. Full parity and long-running production reliability are not yet established.
 
 See [architecture, testing and limitations](docs/architecture.md) for implementation details, development commands and references.

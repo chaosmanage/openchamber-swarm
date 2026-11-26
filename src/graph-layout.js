@@ -13,6 +13,16 @@ export function layoutGraph(roster,hive){
  }
  return {positions,r};
 }
+// Fit the complete roster, including members hidden by replay/filtering.
+export function graphCamera(positions,r,hive,zoom=1){
+ const points=[...positions.values()];
+ if(!points.length)return VIEW.slice();
+ const px=hive?r+14:64+12,py=hive?Math.sqrt(3)*r/2+14:13+12;
+ const xs=points.map(p=>p[0]),ys=points.map(p=>p[1]);
+ const left=Math.min(...xs)-px,right=Math.max(...xs)+px,top=Math.min(...ys)-py,bottom=Math.max(...ys)+py;
+ const cx=(left+right)/2,cy=(top+bottom)/2,w=(right-left)/zoom,h=(bottom-top)/zoom;
+ return [cx-w/2,cy-h/2,w,h];
+}
 export function collectEdges(posts,visible){
  const pairs=new Map();
  for(const p of posts)for(const to of p.to){if(p.from===to||!visible.has(p.from)||!visible.has(to))continue;const [a,b]=[p.from,to].sort(),key=JSON.stringify([a,b]);let e=pairs.get(key);if(!e){e={a,b,ab:0,ba:0};pairs.set(key,e);}e[p.from===a?'ab':'ba']++;}

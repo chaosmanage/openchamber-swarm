@@ -1604,6 +1604,16 @@
     }
     return { positions, r };
   }
+  function graphCamera(positions, r, hive, zoom = 1) {
+    const points = [...positions.values()];
+    if (!points.length)
+      return VIEW.slice();
+    const px = hive ? r + 14 : 64 + 12, py = hive ? Math.sqrt(3) * r / 2 + 14 : 13 + 12;
+    const xs = points.map((p) => p[0]), ys = points.map((p) => p[1]);
+    const left = Math.min(...xs) - px, right = Math.max(...xs) + px, top = Math.min(...ys) - py, bottom = Math.max(...ys) + py;
+    const cx = (left + right) / 2, cy = (top + bottom) / 2, w = (right - left) / zoom, h = (bottom - top) / zoom;
+    return [cx - w / 2, cy - h / 2, w, h];
+  }
   function collectEdges(posts, visible) {
     const pairs = new Map;
     for (const p of posts)
@@ -1792,7 +1802,7 @@
     };
     const all = [...s.members.map(historic), { name: "monitor", role: "monitor", state: s.status === "running" ? s.monitor?.bridgeConnected ? "active" : "waiting" : "retired", brief: "Supervises stalls and wakes members." }];
     const nodes = all.filter((m) => (replay === null || m.role === "monitor" || m.role === "coordinator" || !(s.history || []).length || (s.history || []).some((h) => h.name === m.name && h.post <= count)) && (!hideInactive || !["waiting", "retired"].includes(m.state) || m.role === "coordinator"));
-    const isHive = mode === "Hive", { positions: pos, r: hexR } = layoutGraph(all, isHive), view = VIEW, visible = new Set(nodes.map((m) => m.name));
+    const isHive = mode === "Hive", { positions: pos, r: hexR } = layoutGraph(all, isHive), view = graphCamera(pos, hexR, isHive, zoomLevel), visible = new Set(nodes.map((m) => m.name));
     const edges = collectEdges(posts, visible);
     const hex = (r) => Array.from({ length: 6 }, (_, i) => {
       const a = i * Math.PI / 3;
@@ -1827,7 +1837,7 @@
       drawing += "</g>";
     }
     const detail = nodes.find((m) => m.name === graphMember);
-    return '<div class="graph-view" data-swarm="' + esc(s.id) + '"><section class="graph-shell ' + (graphExpanded ? "expanded" : "") + '"><div class="timeline"><button id="first" aria-label="First post">|‹</button><button id="prev" aria-label="Previous post">‹</button><button id="play" aria-label="Play or pause">' + (playing ? "Ⅱ" : "▶") + '</button><button id="next" aria-label="Next post">›</button><input id="replay" type="range" min="0" max="' + s.posts.length + '" value="' + count + '" aria-label="Replay timeline"><button id="live" class="' + (replay === null ? "live-button" : "") + '">● Live</button></div><div class="graph-tools"><span class="counter">' + count + " of " + s.posts.length + (last ? " · #" + last.id + " at " + fmt(last.at) : "") + '</span><div class="segmented"><button data-mode="Hive" class="' + (isHive ? "selected" : "") + '">Hive</button><button data-mode="Mentions" class="' + (!isHive ? "selected" : "") + '">Mentions</button></div></div><div class="graph-tools secondary-tools"><button id="hideInactive" aria-pressed="' + hideInactive + '" class="subtle-button"><span class="switch ' + (hideInactive ? "on" : "") + '"></span> Hide inactive</button><label>Speed <select id="pace"><option value=".5" ' + (pace === 0.5 ? "selected" : "") + '>0.5×</option><option value="1" ' + (pace === 1 ? "selected" : "") + '>1×</option><option value="2" ' + (pace === 2 ? "selected" : "") + '>2×</option></select></label><span class="push"></span><button id="minus" aria-label="Zoom out">−</button><button id="plus" aria-label="Zoom in"><svg class="control-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button><button id="zoom" aria-label="Expand">↗</button></div><div class="graph-canvas"><svg class="graph" style="--graph-zoom:' + zoomLevel + '" viewBox="' + view.join(" ") + '" aria-label="Swarm communication graph">' + drawing + '</svg></div><div class="legend">' + (isHive ? '<span><i class="line-key green"></i> Tasks done</span><span><i class="line-key blue"></i> Message just sent</span>' : '<span><i class="line-key gray"></i> Connection · arrows show direction</span><span><i class="line-key blue"></i> Latest mention · select for counts</span>') + '</div><small class="graph-note">Post history replay · recorded agent states</small>' + (last ? '<article class="replay-post"><div class="post-meta"><strong>' + esc(last.from) + '</strong><span class="post-target">→ ' + esc(last.to.map((x) => "@" + x).join(" ")) + '</span><span class="post-time">' + fmt(last.at) + '</span></div><div class="text"><span class="kind-chip ' + esc(last.kind) + '">[' + esc(last.kind) + "]</span> " + esc(last.text) + "</div></article>" : '<article class="replay-post"><div class="post-meta"><strong>Board message</strong></div><div class="text muted">Before the first post</div></article>') + "</section>" + (detail ? '<div class="card member-detail"><div class="row">' + avatar(detail, all.indexOf(detail)) + "<strong>@" + esc(detail.name) + "</strong> " + status(detail.state) + "</div><p>" + esc(detail.brief || "Supervises swarm activity") + "</p>" + (detail.sessionId ? '<button data-open="' + esc(detail.sessionId) + '">Open conversation</button>' : "") + "</div>" : "") + "</div>";
+    return '<div class="graph-view" data-swarm="' + esc(s.id) + '"><section class="graph-shell ' + (graphExpanded ? "expanded" : "") + '"><div class="timeline"><button id="first" aria-label="First post">|‹</button><button id="prev" aria-label="Previous post">‹</button><button id="play" aria-label="Play or pause">' + (playing ? "Ⅱ" : "▶") + '</button><button id="next" aria-label="Next post">›</button><input id="replay" type="range" min="0" max="' + s.posts.length + '" value="' + count + '" aria-label="Replay timeline"><button id="live" class="' + (replay === null ? "live-button" : "") + '">● Live</button></div><div class="graph-tools"><span class="counter">' + count + " of " + s.posts.length + (last ? " · #" + last.id + " at " + fmt(last.at) : "") + '</span><div class="segmented"><button data-mode="Hive" class="' + (isHive ? "selected" : "") + '">Hive</button><button data-mode="Mentions" class="' + (!isHive ? "selected" : "") + '">Mentions</button></div></div><div class="graph-tools secondary-tools"><button id="hideInactive" aria-pressed="' + hideInactive + '" class="subtle-button"><span class="switch ' + (hideInactive ? "on" : "") + '"></span> Hide inactive</button><label>Speed <select id="pace"><option value=".5" ' + (pace === 0.5 ? "selected" : "") + '>0.5×</option><option value="1" ' + (pace === 1 ? "selected" : "") + '>1×</option><option value="2" ' + (pace === 2 ? "selected" : "") + '>2×</option></select></label><span class="push"></span><button id="minus" aria-label="Zoom out">−</button><button id="plus" aria-label="Zoom in"><svg class="control-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button><button id="fit" aria-label="Reset graph zoom" title="Fit graph">' + Math.round(zoomLevel * 100) + '%</button><button id="zoom" aria-label="Expand">↗</button></div><div class="graph-canvas"><svg class="graph" preserveAspectRatio="xMidYMid meet" viewBox="' + view.join(" ") + '" aria-label="Swarm communication graph">' + drawing + '</svg></div><div class="legend">' + (isHive ? '<span><i class="line-key green"></i> Tasks done</span><span><i class="line-key blue"></i> Message just sent</span>' : '<span><i class="line-key gray"></i> Connection · arrows show direction</span><span><i class="line-key blue"></i> Latest mention · select for counts</span>') + '</div><small class="graph-note">Post history replay · recorded agent states</small>' + (last ? '<article class="replay-post"><div class="post-meta"><strong>' + esc(last.from) + '</strong><span class="post-target">→ ' + esc(last.to.map((x) => "@" + x).join(" ")) + '</span><span class="post-time">' + fmt(last.at) + '</span></div><div class="text"><span class="kind-chip ' + esc(last.kind) + '">[' + esc(last.kind) + "]</span> " + esc(last.text) + "</div></article>" : '<article class="replay-post"><div class="post-meta"><strong>Board message</strong></div><div class="text muted">Before the first post</div></article>') + "</section>" + (detail ? '<div class="card member-detail"><div class="row">' + avatar(detail, all.indexOf(detail)) + "<strong>@" + esc(detail.name) + "</strong> " + status(detail.state) + "</div><p>" + esc(detail.brief || "Supervises swarm activity") + "</p>" + (detail.sessionId ? '<button data-open="' + esc(detail.sessionId) + '">Open conversation</button>' : "") + "</div>" : "") + "</div>";
   }
   function patchGraphElement(old, next) {
     if (!old || !next || old.nodeType !== next.nodeType || old.nodeName !== next.nodeName) {
@@ -2000,6 +2010,7 @@
       playing = false;
       selected = e.target.value;
       graphMember = "";
+      zoomLevel = 1;
       replay = null;
       deleteConfirm = false;
       stopConfirm = false;
@@ -2065,12 +2076,16 @@
       render();
     });
     root.querySelector("#minus")?.addEventListener("click", () => {
-      zoomLevel = Math.max(0.7, zoomLevel - 0.2);
-      render();
+      zoomLevel = Math.max(0.6, Math.round((zoomLevel - 0.2) * 10) / 10);
+      replayFrame();
     });
     root.querySelector("#plus")?.addEventListener("click", () => {
-      zoomLevel = Math.min(2, zoomLevel + 0.2);
-      render();
+      zoomLevel = Math.min(2.4, Math.round((zoomLevel + 0.2) * 10) / 10);
+      replayFrame();
+    });
+    root.querySelector("#fit")?.addEventListener("click", () => {
+      zoomLevel = 1;
+      replayFrame();
     });
     root.querySelector("#first")?.addEventListener("click", () => {
       replay = 0;

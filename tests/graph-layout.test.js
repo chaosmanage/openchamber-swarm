@@ -16,3 +16,17 @@ test('opposite mentions aggregate into one connection with independent direction
  assert.deepEqual(edges,[{a:'a',b:'b',ab:2,ba:1}]);
  assert.deepEqual(edgeGeometry([80,50],[560,50]),{path:'M148 50 L492 50',x:320,y:50});
 });
+test('fit and zoom use the roster bounds and preserve the exact camera center',async()=>{
+ const {graphCamera}=await import('../src/graph-layout.js');
+ for(let n=2;n<=13;n++)for(const hive of [true,false]){
+  const {positions,r}=layoutGraph([...roster.slice(0,n-1),roster[12]],hive);
+  const fit=graphCamera(positions,r,hive),zoom=graphCamera(positions,r,hive,1.8);
+  const center=v=>[v[0]+v[2]/2,v[1]+v[3]/2];
+  assert.ok(center(fit).every((v,i)=>Math.abs(v-center(zoom)[i])<1e-8));
+  assert.ok(Math.abs(fit[2]/zoom[2]-1.8)<1e-8);
+  for(const [x,y] of positions.values()){
+   const hx=hive?r:64,hy=hive?Math.sqrt(3)*r/2:13;
+   assert.ok(x-hx>=fit[0]&&x+hx<=fit[0]+fit[2]&&y-hy>=fit[1]&&y+hy<=fit[1]+fit[3]);
+  }
+ }
+});
