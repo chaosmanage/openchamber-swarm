@@ -466,18 +466,20 @@ async function pump() {
             if (!m.initialized || !m.model) {
               const info = await native("get", { sessionID: m.sessionId }, s.directory);
               if (info?.model) {
-                if (m.role === "coordinator" && !m.initialized) {
+                if (m.role === "coordinator" && !s.launchModelRef) {
                   s.launchModel = modelName(info.model);
                   s.launchModelRef = info.model;
                 }
                 m.model = modelName(info.model);
                 m.modelRef = info.model;
               }
-              if (m.role === "coordinator" && s.coordinatorModel && modelName(info?.model) !== s.coordinatorModel) {
-                const target = modelRef(s.coordinatorModel);
-                await native("switch-model", { sessionID: m.sessionId, model: target }, s.directory);
-                m.model = s.coordinatorModel;
-                m.modelRef = target;
+              if (m.role === "coordinator") {
+                const target = modelRef(s.coordinatorModel) || s.launchModelRef;
+                if (target && (modelName(info?.model) !== modelName(target) || info?.model?.variant !== target.variant)) {
+                  await native("switch-model", { sessionID: m.sessionId, model: target }, s.directory);
+                  m.model = modelName(target);
+                  m.modelRef = target;
+                }
               }
               if (m.role === "coordinator" && !m.model)
                 throw Error("No model selected for coordinator. Select a model in OpenChamber and retry.");
@@ -497,8 +499,13 @@ async function pump() {
             }
           } else {
             const sessionID = stableId("ses_", s.id + ":" + m.name);
-            const result = await native("create", { id: sessionID, title: s.key + " @" + m.name, location: { directory: s.directory }, ...m.modelRef || modelRef(m.model) ? { model: m.modelRef || modelRef(m.model) } : {} }, s.directory);
+            const result = await native("create", { id: sessionID, title: m.role === "coordinator" ? s.title : "@" + m.name, ...m.role !== "coordinator" ? { parentID: s.members[0].sessionId } : {}, location: { directory: s.directory }, ...m.modelRef || modelRef(m.model) ? { model: m.modelRef || modelRef(m.model) } : {} }, s.directory);
             m.sessionId = result.id;
+            const requested = m.modelRef || modelRef(m.model);
+            if (requested && (modelName(result.model) !== modelName(requested) || result.model?.variant !== requested.variant)) {
+              await native("switch-model", { sessionID: m.sessionId, model: requested }, s.directory);
+              result.model = requested;
+            }
             if (result.model) {
               m.model = modelName(result.model);
               m.modelRef = result.model;
@@ -546,9 +553,13 @@ function begin(b) {
     throw Error("Current conversation already belongs to a running swarm");
   const s = createSwarm({ ...b, number: state.next++ });
   Object.assign(s, state.settings);
-  s.launchModel = b.model || "";
-  s.launchModelRef = modelRef(b.model);
+  s.launchModel = modelName(modelRef(b.modelRef) || modelRef(b.model));
+  s.launchModelRef = modelRef(b.modelRef) || modelRef(b.model);
   const m = s.members[0];
+  if (s.launchModelRef) {
+    m.model = s.launchModel;
+    m.modelRef = s.launchModelRef;
+  }
   if (s.coordinatorModel && !m.sessionId) {
     m.model = s.coordinatorModel;
     m.modelRef = modelRef(s.coordinatorModel);

@@ -17,7 +17,7 @@ test('scoped native bridge, implicit context, sleeping wake, busy delivery, moni
  const req=async(p,b)=>{const r=await fetch('http://127.0.0.1:'+port+p,{method:b?'POST':'GET',headers:{Authorization:'Bearer test-token','Content-Type':'application/json'},...(b?{body:JSON.stringify(b)}:{})});const v=await r.json();assert.equal(r.status,200,JSON.stringify(v));return v;};
  await wait(()=>req('/health'));
  const agent=(sessionId,action,input)=>req('/agent',{sessionId,action,input});
- const inject=async(id)=>{const context=await req('/context',{sessionId:id,directory:'/repo'});assert.ok(context.text);contexts.set(id,context);await req('/context/ack',{sessionId:id,ids:context.ids});return context;};
+ const inject=async(id)=>{const context=await req('/context',{sessionId:id,directory:'/repo'});if(!context.text)return null;contexts.set(id,context);await req('/context/ack',{sessionId:id,ids:context.ids});return context;};
  const s=await req('/start',{task:'Implement test',directory:'/repo',sessionId:null});
  const state=async()=> (await req('/list?directory=%2Frepo'))[0];
  const member=async n=>(await state()).members.find(m=>m.name===n);
@@ -32,7 +32,7 @@ test('scoped native bridge, implicit context, sleeping wake, busy delivery, moni
  await agent(coord.sessionId,'add',{name:'fix-1',brief:'Fix issue',paths:['x.js']});
  await agent(coord.sessionId,'add',{name:'verify',brief:'Check work',role:'verifier',deferred:true});
  const w=await wait(async()=>{const m=await member('fix-1');return m?.state==='active'&&m.pending===0&&m;});
- assert.match(contexts.get(w.sessionId).text,/Fix issue/);assert.equal(w.model,'test/selected');
+ assert.match(contexts.get(w.sessionId).text,/Fix issue/);assert.equal(w.model,'test/selected');assert.ok(nativeCalls.some(c=>c.op==='create'&&c.input.id===w.sessionId&&c.input.parentID===coord.sessionId&&c.input.title==='@fix-1'));
  assert.equal((await member('verify')).sessionId,null);
  assert.deepEqual((await req('/context',{sessionId:w.sessionId,directory:'/other-project'})),{ok:true});
  await agent(coord.sessionId,'post',{text:'@fix-1 Extra acceptance criterion'});
@@ -58,11 +58,11 @@ test('scoped native bridge, implicit context, sleeping wake, busy delivery, moni
  await req('/stop',{id:s.id});assert.equal((await state()).status,'stopped');
  assert.equal(calls.filter(c=>['sessions.start','sessions.send'].includes(c.method)).length,0);
  await req('/settings',{coordinatorModel:'test/lead',workerModel:'test/worker',verifierModel:'test/verifier',monitorModel:'test/supervisor',monitorReasoning:true});
- const second=await req('/start',{task:'Role model settings test',directory:'/repo',sessionId:'ses_role_test',model:'test/selected'});
+ const second=await req('/start',{task:'Role model settings test',directory:'/repo',sessionId:'ses_role_test',model:'picker/chosen',modelRef:{providerID:'picker',id:'chosen',variant:'high'}});
  const roleState=async()=> (await req('/list?directory=%2Frepo')).find(s=>s.id===second.id);
  const roleMember=async n=>(await roleState()).members.find(m=>m.name===n);
  await wait(async()=>{const m=await roleMember('coordinator');return m.state==='active'&&m.pending===0;});
- assert.equal((await roleMember('coordinator')).model,'test/lead');
+ assert.equal((await roleMember('coordinator')).model,'test/lead');assert.equal((await roleState()).launchModel,'picker/chosen');
  assert.ok(nativeCalls.some(c=>c.op==='switch-model'&&c.input.model.id==='lead'));
  await agent('ses_role_test','add',{name:'role-worker',brief:'Worker test',role:'worker'});
  await agent('ses_role_test','add',{name:'role-verifier',brief:'Verifier test',role:'verifier'});
@@ -73,6 +73,16 @@ test('scoped native bridge, implicit context, sleeping wake, busy delivery, moni
  await wait(()=>nativeCalls.find(c=>c.op==='review'&&c.input.model?.id==='supervisor'),6000);
  await wait(async()=> (await roleState()).monitor.review==='Review complete');
  await req('/delete',{id:second.id});
+ await req('/settings',{});
+ const third=await req('/start',{task:'Picker inheritance',directory:'/repo',sessionId:'ses_picker_test',model:'picker/chosen',modelRef:{providerID:'picker',id:'chosen',variant:'high'}});
+ const pickerState=async()=> (await req('/list?directory=%2Frepo')).find(s=>s.id===third.id);
+ await wait(async()=>{const m=(await pickerState()).members[0];return m.state==='active'&&m.pending===0;});
+ assert.equal((await pickerState()).members[0].model,'picker/chosen');
+ assert.ok(nativeCalls.some(c=>c.op==='switch-model'&&c.input.sessionID==='ses_picker_test'&&c.input.model.variant==='high'));
+ await agent('ses_picker_test','add',{name:'picker-worker',brief:'Inherit exact variant',role:'worker'});
+ await wait(()=>nativeCalls.find(c=>c.op==='create'&&c.input.parentID==='ses_picker_test'&&c.input.model?.id==='chosen'&&c.input.model.variant==='high'));
+ await wait(async()=> (await pickerState()).members.find(m=>m.name==='picker-worker')?.state==='active'&&(await pickerState()).members.find(m=>m.name==='picker-worker')?.pending===0);await req('/delete',{id:third.id});
+
  quit=true;await bridge;proc.kill();await new Promise(r=>proc.once('exit',r));proc=spawn(process.execPath,['service/main.js'],{env:config,stdio:'ignore'});await wait(()=>req('/health'));assert.equal((await state()).status,'stopped');
  await req('/settings',{workerModel:'test/worker',verifierModel:'test/verifier'});
  assert.equal((await req('/settings')).workerModel,'test/worker');

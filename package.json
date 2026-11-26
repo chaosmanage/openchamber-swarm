@@ -1,6 +1,6 @@
 {
   "name": "openchamber-swarm",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "private": true,
   "type": "module",
   "description": "Collaborative multi-agent swarm for OpenChamber and OpenCode",
@@ -63,12 +63,6 @@
           "name": "Swarm",
           "icon": "icon.svg",
           "output": "text"
-        }
-      ],
-      "commands": [
-        {
-          "name": "swarm",
-          "description": "Start a collaborative swarm for a task"
         }
       ]
     }

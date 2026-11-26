@@ -12,3 +12,17 @@ main{max-width:1100px;margin:auto;padding:12px 16px 24px}.card,.goal{background:
 .settings-card{margin-bottom:12px}.settings-card p{font-size:11px;margin:6px 0 10px}.settings-card label{display:block;font-size:11px;color:var(--soft);margin-bottom:10px}.settings-card input{display:block;width:100%;margin-top:4px}.settings-card .row{justify-content:flex-end}
 .sticky-top{position:sticky;top:0;z-index:5;background:var(--bg);border-bottom:1px solid #1c1c1e}.sticky-top .tabs{border-bottom:0}.confirm-card p{font-size:12px;color:var(--soft);margin:7px 0 12px}.confirm-card .row{justify-content:flex-end}.danger-button{color:#f2b0b0;border-color:#654444;background:#302020}.danger-button:hover{background:#412828}
 .settings-card .monitor-toggle{display:flex;align-items:center;gap:8px}.settings-card .monitor-toggle input{width:auto;margin:0;accent-color:var(--blue)}.monitor-review{font-size:11px;color:var(--soft);margin-top:8px}
+/* Original pixel sprites: separate wing hinges, body bob and sleeping animation. */
+.bee-icon .bee-wing{transform-box:fill-box;transform-origin:50% 100%}
+.bee-icon.flying .bee-wing.near{animation:wing-flap .18s steps(3,end) infinite}
+.bee-icon.flying .bee-wing.far{animation:wing-flap .18s steps(3,end) infinite reverse}
+.bee-icon.flying .bee-flight{animation:bee-hover 1.5s ease-in-out infinite;transform-box:fill-box;transform-origin:center}
+.bee-icon.dozing .bee-wing{transform:rotate(24deg) scaleY(.67)}
+.bee-icon.dozing .sleep-z{animation:sleep-rise 2.8s ease-in-out infinite}
+.bee-icon.bee-blocked{opacity:.86}
+.header-title{display:flex;align-items:center;gap:7px}.header-title .bee-icon{width:23px;height:23px}.header-title>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@keyframes wing-flap{0%,100%{transform:rotate(-8deg) scaleY(1)}50%{transform:rotate(42deg) scaleY(.4)}}
+@keyframes bee-hover{0%,100%{transform:translateY(0)}50%{transform:translateY(-1.7px)}}
+@keyframes sleep-rise{0%,100%{opacity:.5;transform:translateY(0)}50%{opacity:1;transform:translateY(-1.5px)}}
+@media(prefers-reduced-motion:reduce){.bee-icon .bee-wing,.bee-icon .bee-flight,.bee-icon .sleep-z{animation:none!important}}
+.control-icon{display:block;width:15px;height:15px}.header-actions .subtle-button{display:grid;place-items:center;width:26px;height:26px;border-radius:5px}.header-actions .subtle-button:hover{background:#222225}.recent-edge{stroke-dasharray:5 3;animation:message-flow .9s linear infinite}@keyframes message-flow{to{stroke-dashoffset:-8}}.header-title>span{font-weight:600}.graph-canvas .bee-icon{overflow:visible}.member-line .avatar{width:46px;height:44px}.member-line .avatar .bee-icon{width:40px;height:36px}.avatar{background:color-mix(in srgb,var(--role,#aaa) 9%,#171719)}.tabs button{font-weight:500}.tabs button:hover{color:var(--fg)}@media(prefers-reduced-motion:reduce){.recent-edge{animation:none;stroke-dasharray:none}}

@@ -42,6 +42,13 @@ export default {id:'oc-swarm-tools',async setup(ctx){
  // Native deletion events also cover coordinator deletion from the OpenChamber chat list.
  const deleted=(async()=>{try{for await(const e of ctx.event.subscribe({types:['session.deleted']})){if(stopped)break;await request('session-deleted',{sessionId:e.data.sessionID,directory:e.location?.directory||ctx.location.directory},AbortSignal.timeout(2500)).catch(()=>{});}}catch{}})();
 
+ // Native commands run after the host applies the composer model selection.
+ await ctx.command.transform(commands=>commands.add({name:'swarm',description:'Start a collaborative swarm using the selected model',async execute({sessionID,prompt}){
+  const task=String(prompt.text||'').trim();if(!task)throw Error('Usage: /swarm <task and acceptance criteria>');
+  const info=await ctx.session.get({sessionID});if(!info?.model?.providerID||!info.model.id)throw Error('Choose a model in the chat before starting a swarm.');
+  const swarm=await request('start',{task,sessionId:sessionID,directory:ctx.location.directory,model:info.model.providerID+'/'+info.model.id,modelRef:info.model},AbortSignal.timeout(10000));
+  await ctx.session.update({sessionID,title:swarm.title});
+ }}));
  await ctx.tool.transform(tools=>{for(const [action,description,properties,required] of definitions)tools.add({name:'swarm_'+action,description,options:{codemode:false},input:{type:'object',properties,required,additionalProperties:false},async execute(input,context){return bridge(action,context.sessionID,input,context.signal);}});});
  return ()=>{stopped=true;clearTimeout(timer);};
 }};
