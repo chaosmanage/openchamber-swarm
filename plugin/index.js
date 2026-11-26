@@ -1,10 +1,11 @@
-const bridge=async(action,sessionID,input,signal)=>{
+const request=async(route,body,signal)=>{
  const fs=await import('node:fs/promises'), os=await import('node:os'), path=await import('node:path');
  let cfg; try{cfg=JSON.parse(await fs.readFile(path.join(os.homedir(),'.cache','openchamber-swarm','bridge.json'),'utf8'));}catch{throw Error('Swarm service unavailable. Enable Swarm in OpenChamber.');}
  if(!Number.isInteger(cfg.port)||cfg.port<1||cfg.port>65535||typeof cfg.token!=='string')throw Error('Invalid swarm service configuration');
- const r=await fetch('http://127.0.0.1:'+cfg.port+'/agent',{method:'POST',headers:{Authorization:'Bearer '+cfg.token,'Content-Type':'application/json'},body:JSON.stringify({action,sessionId:sessionID,input}),signal});
- const result=await r.json();if(!r.ok)throw Error(result.error||'Swarm request failed');return {content:JSON.stringify(result)};
+ const r=await fetch('http://127.0.0.1:'+cfg.port+'/' +route,{method:'POST',headers:{Authorization:'Bearer '+cfg.token,'Content-Type':'application/json'},body:JSON.stringify(body),signal});
+ const result=await r.json();if(!r.ok)throw Error(result.error||'Swarm request failed');return result;
 };
+const bridge=async(action,sessionID,input,signal)=>({content:JSON.stringify(await request('agent',{action,sessionId:sessionID,input},signal))});
 const string={type:'string'}, boolean={type:'boolean'}, list={type:'array',items:string};
 const definitions=[
  ['read','Read latest shared board posts; after is an optional post number.',{after:{type:'integer'}},[]],
@@ -15,5 +16,16 @@ const definitions=[
  ['finish','Coordinator only: complete the swarm after independent verification, or explicitly report failure.',{summary:string,failed:boolean},['summary']]
 ];
 export default {id:'oc-swarm-tools',async setup(ctx){
+ let stopped=false,timer;
+ const poll=async()=>{try{
+   const {job}=await request('bridge/poll',{},AbortSignal.timeout(5000));
+   if(job){try{
+    const result=job.op==='create'?await ctx.session.create(job.input):job.op==='wake'?await ctx.session.synthetic(job.input):(()=>{throw Error('Unknown bridge job');})();
+    await request('bridge/result',{id:job.id,result},AbortSignal.timeout(5000));
+   }catch(e){await request('bridge/result',{id:job.id,error:String(e.message||e)},AbortSignal.timeout(5000)).catch(()=>{});}}
+ }catch{}finally{if(!stopped){timer=setTimeout(poll,900);timer.unref?.();}
+}};
+ void poll();
  await ctx.tool.transform(tools=>{for(const [action,description,properties,required] of definitions)tools.add({name:'swarm_'+action,description,options:{codemode:false},input:{type:'object',properties,required,additionalProperties:false},async execute(input,context){return bridge(action,context.sessionID,input,context.signal);}});});
+ return ()=>{stopped=true;clearTimeout(timer);};
 }};
