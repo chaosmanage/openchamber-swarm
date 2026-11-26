@@ -7,3 +7,10 @@ test('deferred members stay idle; retired members do not wake',()=>{const s=make
 test('reject overlapping ownership',()=>{const s=make();addMember(s,{name:'a',brief:'A',paths:['src']});assert.throws(()=>addMember(s,{name:'b',brief:'B',paths:['src/x.js']}),/Overlapping/);});
 test('verify before finish and after new work',()=>{const s=make();addMember(s,{name:'a',brief:'Work'});addMember(s,{name:'verify',role:'verifier',brief:'Check'});assert.throws(()=>finish(s,'done'),/verification/);appendPost(s,'a',['verify'],'done','done');appendPost(s,'verify',['coordinator'],'passed','verified');appendPost(s,'a',['verify'],'new changes','done');assert.throws(()=>finish(s,'done'),/verify again/);appendPost(s,'verify',['coordinator'],'passed again','verified');finish(s,'done');assert.equal(s.status,'done');});
 test('implicit @mentions route to exact/group recipients, unknown prose mentions and unaddressed posts do not wake',()=>{const s=make();const a=addMember(s,{name:'fix-1',brief:'A'}),b=addMember(s,{name:'fix-2',brief:'B'});appendPost(s,'coordinator',[],'@fix check, @unknown is not a member');assert.deepEqual(a.queue,[1]);assert.deepEqual(b.queue,[1]);appendPost(s,'coordinator',[],'FYI public board update');assert.deepEqual(a.queue,[1]);appendPost(s,'coordinator',[],'mail me at example@fix.com');assert.deepEqual(a.queue,[1]);});
+test('assignment briefs do not notify agents mentioned within assignment text',()=>{
+ const s=make();const a=addMember(s,{name:'alpha',brief:'A'}),b=addMember(s,{name:'beta',brief:'B'}),v=addMember(s,{name:'verifier',brief:'Check both',role:'verifier',deferred:true});
+ const p=appendPost(s,'coordinator',['beta'],'Send @alpha a report and notify @coordinator when done.','brief');
+ assert.deepEqual(p.to,['beta']);assert.deepEqual(a.queue,[]);assert.deepEqual(b.queue,[p.id]);
+ const check=appendPost(s,'coordinator',['verifier'],'Check @alpha and @beta.','brief',false);
+ assert.deepEqual(check.to,['verifier']);assert.deepEqual(v.queue,[]);assert.equal(v.deferred,true);
+});

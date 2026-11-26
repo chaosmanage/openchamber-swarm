@@ -55,6 +55,12 @@ test('scoped native bridge, implicit context, sleeping wake, busy delivery, moni
  await end(coord.sessionId);await end(verifier.sessionId);
  await wait(async()=> (await state()).posts.some(p=>p.from==='monitor'&&p.kind==='stall'),6000);
  assert.ok((await state()).monitor.checks>1);assert.ok((await state()).history.some(h=>h.state==='waiting'));
+ const stall=(await state()).posts.find(p=>p.from==='monitor'&&p.kind==='stall');
+ const monitored=(await state()).members.find(m=>m.name===stall.to[0]);
+ await wait(()=>nativeCalls.find(c=>c.op==='wake'&&c.input.sessionID===monitored.sessionId&&c.input.metadata.posts.includes(stall.id)),15000);
+ await wait(()=>contexts.get(monitored.sessionId)?.ids.includes(stall.id));
+ assert.match(contexts.get(monitored.sessionId).text,/outstanding work/);
+
  await req('/stop',{id:s.id});assert.equal((await state()).status,'stopped');
  assert.equal(calls.filter(c=>['sessions.start','sessions.send'].includes(c.method)).length,0);
  await req('/settings',{coordinatorModel:'test/lead',workerModel:'test/worker',verifierModel:'test/verifier',monitorModel:'test/supervisor',monitorReasoning:true});
@@ -81,7 +87,32 @@ test('scoped native bridge, implicit context, sleeping wake, busy delivery, moni
  assert.ok(nativeCalls.some(c=>c.op==='switch-model'&&c.input.sessionID==='ses_picker_test'&&c.input.model.variant==='high'));
  await agent('ses_picker_test','add',{name:'picker-worker',brief:'Inherit exact variant',role:'worker'});
  await wait(()=>nativeCalls.find(c=>c.op==='create'&&c.input.parentID==='ses_picker_test'&&c.input.model?.id==='chosen'&&c.input.model.variant==='high'));
- await wait(async()=> (await pickerState()).members.find(m=>m.name==='picker-worker')?.state==='active'&&(await pickerState()).members.find(m=>m.name==='picker-worker')?.pending===0);await req('/delete',{id:third.id});
+ await wait(async()=> (await pickerState()).members.find(m=>m.name==='picker-worker')?.state==='active'&&(await pickerState()).members.find(m=>m.name==='picker-worker')?.pending===0);
+ // Direct worker-to-worker exchange: neither delivery nor wake requires the coordinator.
+ const a=(await pickerState()).members.find(m=>m.name==='picker-worker');
+ await agent('ses_picker_test','add',{name:'peer',brief:'Peer communication test',role:'worker'});
+ const peer=await wait(async()=>{const m=(await pickerState()).members.find(m=>m.name==='peer');return m?.state==='active'&&m.pending===0&&m;});
+ const count=id=>nativeCalls.filter(c=>['seed','wake'].includes(c.op)&&c.input.sessionID===id).length;
+ const peerInitial=count(peer.sessionId),aInitial=count(a.sessionId);
+ const busyPost=await agent(a.sessionId,'post',{text:'@peer Direct busy handoff: DELTA-42'});
+ const received=await inject(peer.sessionId);
+ assert.ok(received.ids.includes(busyPost.id));assert.match(received.text,/DELTA-42/);
+ assert.equal(count(peer.sessionId),peerInitial);
+ await end(peer.sessionId);
+ await wait(async()=> (await pickerState()).members.find(m=>m.name==='peer').state==='waiting');
+ const sleepPost=await agent(a.sessionId,'post',{text:'@peer Direct sleeping handoff: ECHO-73'});
+ await wait(()=>nativeCalls.find(c=>c.op==='wake'&&c.input.sessionID===peer.sessionId&&c.input.metadata.posts.includes(sleepPost.id)),15000);
+ await wait(()=>contexts.get(peer.sessionId)?.ids.includes(sleepPost.id));
+ assert.match(contexts.get(peer.sessionId).text,/ECHO-73/);
+ assert.equal((await pickerState()).members.find(m=>m.name==='peer').sessionId,peer.sessionId);
+ await end(a.sessionId);
+ const reply=await agent(peer.sessionId,'post',{text:'@picker-worker Direct reply: ACK-73'});
+ await wait(()=>nativeCalls.find(c=>c.op==='wake'&&c.input.sessionID===a.sessionId&&c.input.metadata.posts.includes(reply.id)),15000);
+ await wait(()=>contexts.get(a.sessionId)?.ids.includes(reply.id));
+ assert.match(contexts.get(a.sessionId).text,/ACK-73/);
+ assert.equal(count(a.sessionId),aInitial+1);
+ assert.equal((await pickerState()).members.find(m=>m.name==='picker-worker').pending,0);
+ await req('/delete',{id:third.id});
 
  quit=true;await bridge;proc.kill();await new Promise(r=>proc.once('exit',r));proc=spawn(process.execPath,['service/main.js'],{env:config,stdio:'ignore'});await wait(()=>req('/health'));assert.equal((await state()).status,'stopped');
  await req('/settings',{workerModel:'test/worker',verifierModel:'test/verifier'});

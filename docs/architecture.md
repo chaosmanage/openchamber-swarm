@@ -39,3 +39,7 @@ The automated suite covers fresh coordinator creation, model inheritance, projec
 - https://github.com/google-antigravity/antigravity-cli
 - https://github.com/openchamber/openchamber/blob/main/packages/sdk/API.md
 - https://github.com/openchamber/openchamber/blob/main/packages/sdk/GUEST_SERVICES.md
+
+## Peer communication verification (v0.4.7)
+
+Regression coverage now includes direct worker-to-worker delivery during an active turn, bidirectional wake-up in existing sessions, monitor-triggered wake and delivery, and isolation of assignment briefs from incidental mentions. A live Copilot Auto diagnostic on v0.4.6 exchanged 12 board posts and completed six monitor checks; direct worker posts were acknowledged by the context hook and workers resumed, but the requested peer acknowledgment was not produced before the 90-second test ended. Context-hook acknowledgment is not proof that a model acted on a message. Assignment recipient routing was corrected afterward and tested against native API doubles; a complete live peer handshake after the correction remains unverified.

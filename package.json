@@ -1,6 +1,6 @@
 {
   "name": "openchamber-swarm",
-  "version": "0.4.6",
+  "version": "0.4.7",
   "private": true,
   "type": "module",
   "description": "Collaborative multi-agent swarm for OpenChamber and OpenCode",

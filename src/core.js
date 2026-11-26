@@ -27,7 +27,7 @@ export function appendPost(s,from,to,text,kind='message',wake=true){
  if(s.posts.length>=MAX_POSTS)throw Error('Board post limit reached');
  if(typeof text!=='string'||!text.trim()||text.length>20000)throw Error('Post must contain 1–20000 characters');
  const explicit=(Array.isArray(to)?to:[to]).filter(Boolean).map(x=>String(x).replace(/^@/,'').toLowerCase());
- const mentions=[...text.matchAll(/(?<![\w@])@([a-z][a-z0-9-]{0,29})\b/gi)].map(x=>x[1].toLowerCase()).filter(x=>x==='all'||s.members.some(m=>m.name===x||m.name.startsWith(x+'-')));
+ const mentions=kind==='brief'?[]:[...text.matchAll(/(?<![\w@])@([a-z][a-z0-9-]{0,29})\b/gi)].map(x=>x[1].toLowerCase()).filter(x=>x==='all'||s.members.some(m=>m.name===x||m.name.startsWith(x+'-')));
  const requested=[...new Set([...explicit,...mentions])];
  const recipients=[...new Set(requested.flatMap(x=>x==='all'?s.members.filter(m=>m.name!==from&&m.state!=='retired').map(m=>m.name):s.members.some(m=>m.name===x)?[x]:s.members.filter(m=>m.name.startsWith(x+'-')).map(m=>m.name)))];
  if(requested.some(x=>x!=='all'&&!s.members.some(m=>m.name===x||m.name.startsWith(x+'-'))))throw Error('Unknown recipient');
