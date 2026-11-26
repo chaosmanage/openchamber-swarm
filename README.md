@@ -18,7 +18,9 @@ Collaborative coding agents for [OpenChamber](https://github.com/openchamber/ope
 
 The UI and service are prebuilt. No build step or separate daemon is required.
 
-> **Private repository:** GitHub access is required. If URL installation cannot authenticate, clone the repository on the machine running OpenChamber and install the cloned folder instead.
+### Alternative: local installation
+
+Clone the repository on the machine running OpenChamber:
 
 ```sh
 git clone https://github.com/chaosmanage/openchamber-swarm.git
