@@ -1603,6 +1603,12 @@
   var zoomLevel = 1;
   var pace = 1;
   var newFormOpen = false;
+  var graphExpanded = false;
+  var settingsOpen = false;
+  var deleteConfirm = false;
+  var stopConfirm = false;
+  var swarmSettings = { workerModel: "", verifierModel: "" };
+  var availableModels = [];
   var esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
   var fmt = (t) => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   var palette = ["#f5bb51", "#e3cc55", "#f47a6b", "#b66af0", "#68bbd5", "#75c47e", "#eaa75b", "#a5a2ec", "#e68aa5", "#69c8df", "#d5a9df", "#b0b9c9"];
@@ -1619,6 +1625,26 @@
     if (r.status >= 400)
       throw Error(v.error || "Request failed");
     return v;
+  }
+  async function launch(task) {
+    if (!directory)
+      throw Error("Open a project first.");
+    if (session?.busy)
+      throw Error("Wait for the current turn to finish.");
+    let sid = session?.id, model = session?.model, created = false;
+    if (!sid) {
+      const createdSession = await host.startSession({ providerId: "oc-swarm", id: "SWARM-" + Date.now(), title: task.trim().slice(0, 96), url: "https://github.com/chaosmanage/openchamber-swarm", navigation: "preserve" });
+      if (!createdSession?.sessionId)
+        throw Error("Could not initialize the coordinator chat");
+      sid = createdSession.sessionId;
+      created = true;
+    }
+    const swarm = await api("/start", { task, directory, sessionId: sid, model });
+    selected = swarm.id;
+    await refresh();
+    if (created)
+      await host.openSession(sid);
+    return swarm;
   }
   function current() {
     return swarms.find((s) => s.id === selected) || swarms[0];
@@ -1659,12 +1685,17 @@
   var taskLabel = (m) => short((m.brief || m.name).split(/[\n.]/)[0], 86);
   var memberLine = (m, s) => {
     const i = s.members.indexOf(m), last = s.posts.findLast((p) => p.from === m.name);
-    return '<div class="member-line" ' + (m.sessionId ? 'data-open="' + esc(m.sessionId) + '" role="button" tabindex="0"' : "") + ">" + avatar(m, Math.max(0, i)) + '<div class="member-copy"><div class="member-top"><strong>@' + esc(m.name) + '</strong><span class="member-state ' + esc(m.state) + '">' + (m.role === "coordinator" ? "Coordinator" : m.role === "monitor" ? "Monitor" : m.state === "active" ? "Working" : m.state === "waiting" ? "Standing by" : m.state === "retired" ? "Retired" : m.state === "blocked" ? "Needs attention" : "Waking") + '</span><span class="member-model">' + esc(m.model || "") + (m.lastPost ? " · #" + m.lastPost : "") + '</span></div><div class="member-brief">' + esc(taskLabel(m)) + '</div><div class="member-last">' + esc(short(last?.text || m.lastReply || "No posts yet", 160)) + "</div>" + (m.error ? '<div class="error">' + esc(m.error) + "</div>" : "") + "</div>" + (m.state === "blocked" && s.status === "running" ? '<button data-retry="' + esc(m.name) + '" class="subtle-button">Retry</button>' : "") + "</div>";
+    return '<div class="member-line" ' + (m.sessionId ? 'data-open="' + esc(m.sessionId) + '" role="button" tabindex="0"' : "") + ">" + avatar(m, Math.max(0, i)) + '<div class="member-copy"><div class="member-top"><strong>@' + esc(m.name) + '</strong><span class="member-state ' + esc(m.state) + '">' + (m.role === "coordinator" ? "Coordinator · " + ({ active: "Working", waiting: "Standing by", dispatching: "Waking", blocked: "Needs attention", retired: "Retired" }[m.state] || m.state) : m.role === "monitor" ? "Monitor" : m.state === "active" ? "Working" : m.state === "waiting" ? "Standing by" : m.state === "retired" ? "Retired" : m.state === "blocked" ? "Needs attention" : "Waking") + '</span><span class="member-model">' + esc(m.model || "") + (m.pending ? " · " + m.pending + " pending" : "") + (m.lastPost ? " · #" + m.lastPost : "") + '</span></div><div class="member-brief">' + esc(taskLabel(m)) + '</div><div class="member-last">' + esc(short(last?.text || m.lastReply || "No posts yet", 160)) + "</div>" + (m.error ? '<div class="error">' + esc(m.error) + "</div>" : "") + "</div>" + (m.state === "blocked" && s.status === "running" ? '<button data-retry="' + esc(m.name) + '" class="subtle-button">Retry</button>' : "") + "</div>";
   };
+  function monitorLine(s) {
+    const m = s.monitor || {};
+    const live = s.status === "running" && m.lastCheck && Date.now() - m.lastCheck < 45000;
+    return '<section class="card monitor-panel"><div class="monitor-head">' + avatar({ role: "monitor", state: live ? "active" : "waiting" }) + '<div><strong>Monitor</strong><div class="muted">' + esc(m.action || "Awaiting first check") + '</div></div><span class="push pill ' + (live ? "active" : "waiting") + '"><i class="dot"></i>' + (live ? "Watching" : s.status === "running" ? "Starting" : "Stopped") + '</span></div><div class="monitor-meta"><span>Checks <strong>' + Number(m.checks || 0) + "</strong></span><span>Last <strong>" + (m.lastCheck ? fmt(m.lastCheck) : "—") + "</strong></span><span>Next <strong>" + (m.nextCheck && s.status === "running" ? fmt(m.nextCheck) : "—") + '</strong></span><span>Bridge <strong class="' + (m.bridgeConnected ? "bridge-online" : "") + '">' + (m.bridgeConnected ? "Connected" : "Waiting") + "</strong></span></div>" + (m.errors?.length ? '<details class="monitor-errors"><summary>' + m.errors.length + " session check issue(s)</summary>" + m.errors.map((e) => "<p>" + esc(e) + "</p>").join("") + "</details>" : "") + "</section>";
+  }
   function overview(s) {
     const tasks = s.members.filter((m) => m.role !== "coordinator"), finished = (m) => ["reported", "verified"].includes(m.taskState), done = tasks.filter(finished), running = tasks.filter((m) => ["active", "dispatching"].includes(m.state) && !finished(m)), up = tasks.filter((m) => !finished(m) && !running.includes(m)), pct = tasks.length ? Math.round(done.length / tasks.length * 100) : 0;
     const row = (m) => '<div class="task-row" ' + (m.sessionId ? 'data-open="' + esc(m.sessionId) + '" role="button" tabindex="0"' : "") + '><span class="task-indicator ' + (finished(m) ? "complete" : m.state === "active" ? "in-progress" : "queued") + '">' + (finished(m) ? "✓" : "") + '</span><div class="task-copy"><div class="task-top"><strong>' + esc(taskLabel(m)) + '</strong><span class="agent-tag">' + bee(m, s.members.indexOf(m)) + " " + esc(m.name) + "</span></div><small>" + esc(short(s.posts.findLast((p) => p.from === m.name)?.text || m.brief, 110)) + "</small></div></div>";
-    return '<section class="goal"><div class="eyebrow">GOAL</div><h1>' + esc(s.title) + "</h1><p>" + esc(s.task === s.title ? "" : s.task) + '</p></section><section class="card running-card"><h2><i class="blue-dot"></i> Running <span class="muted">' + running.length + "</span></h2>" + (running.length ? running.map(row).join("") : '<p class="muted empty-text">No tasks currently running.</p>') + '</section><section class="card completion-card"><div class="completion-heading"><span class="mini-ring" style="--progress:' + pct + '%"></span><strong>' + done.length + " of " + tasks.length + '</strong> <span>tasks done</span><span class="push muted">' + (tasks.length - done.length) + " open</span></div>" + (done.length ? done.map(row).join("") : '<p class="muted empty-text">No tasks completed yet.</p>') + (up.length ? '<div class="eyebrow up-next">UP NEXT · ' + up.length + "</div>" + up.map(row).join("") : "") + '</section><h2 class="section-title">Threads</h2><section class="threads">' + (tasks.length ? tasks.map((m) => '<details class="card thread"><summary><i class="thread-dot ' + (finished(m) ? "complete" : "") + '"></i><strong>' + esc(taskLabel(m)) + '</strong><span class="muted">' + (finished(m) ? "Done" : m.state === "active" ? "Moving" : m.state === "blocked" ? "Blocked" : "Waiting") + '</span><span class="push thread-progress"><i style="width:' + (finished(m) ? 100 : 0) + '%"></i></span><small>' + (finished(m) ? "1/1" : "0/1") + '</small><span class="muted">›</span></summary><p>' + esc(m.brief) + "</p>" + row(m) + "</details>").join("") : '<p class="muted">The coordinator is preparing the team.</p>') + '</section><h2 class="section-title">Team</h2><section class="roster">' + s.members.map((m) => memberLine(m, s)).join("") + memberLine({ name: "monitor", role: "monitor", state: s.status === "running" ? "waiting" : "retired", brief: "Supervises stalls and wakes members." }, s) + "</section>" + (s.summary ? '<div class="card"><h2>Result</h2><p>' + esc(s.summary) + "</p></div>" : "");
+    return '<section class="goal"><div class="eyebrow">GOAL</div><h1>' + esc(s.title) + "</h1><p>" + esc(s.task === s.title ? "" : s.task) + '</p></section><section class="card running-card"><h2><i class="blue-dot"></i> Running <span class="muted">' + running.length + "</span></h2>" + (running.length ? running.map(row).join("") : '<p class="muted empty-text">No tasks currently running.</p>') + '</section><section class="card completion-card"><div class="completion-heading"><span class="mini-ring" style="--progress:' + pct + '%"></span><strong>' + done.length + " of " + tasks.length + '</strong> <span>tasks done</span><span class="push muted">' + (tasks.length - done.length) + " open</span></div>" + (done.length ? done.map(row).join("") : '<p class="muted empty-text">No tasks completed yet.</p>') + (up.length ? '<div class="eyebrow up-next">UP NEXT · ' + up.length + "</div>" + up.map(row).join("") : "") + '</section><h2 class="section-title">Threads</h2><section class="threads">' + (tasks.length ? tasks.map((m) => '<details class="card thread"><summary><i class="thread-dot ' + (finished(m) ? "complete" : "") + '"></i><strong>' + esc(taskLabel(m)) + '</strong><span class="muted">' + (finished(m) ? "Done" : m.state === "active" ? "Moving" : m.state === "blocked" ? "Blocked" : "Waiting") + '</span><span class="push thread-progress"><i style="width:' + (finished(m) ? 100 : 0) + '%"></i></span><small>' + (finished(m) ? "1/1" : "0/1") + '</small><span class="muted">›</span></summary><p>' + esc(m.brief) + "</p>" + row(m) + "</details>").join("") : '<p class="muted">The coordinator is preparing the team.</p>') + '</section><h2 class="section-title">Team</h2><section class="roster">' + s.members.map((m) => memberLine(m, s)).join("") + memberLine({ name: "monitor", role: "monitor", state: s.status === "running" ? "waiting" : "retired", brief: "Supervises stalls and wakes members." }, s) + "</section>" + monitorLine(s) + (s.summary ? '<div class="card"><h2>Result</h2><p>' + esc(s.summary) + "</p></div>" : "");
   }
   var expandedPosts = new Set;
   function board(s) {
@@ -1685,12 +1716,18 @@
         return "";
       const body = items.map((m) => memberLine(m, s)).join("");
       return name === "Retired" ? '<details class="retired-group"><summary>Retired (' + items.length + ")</summary>" + body + "</details>" : name === "Coordinator" ? '<section class="coordinator-group">' + body + "</section>" : '<section class="member-group"><h2>' + name + " (" + items.length + ")</h2>" + body + "</section>";
-    }).join("") + (!memberSearch || "monitor".includes(memberSearch.toLowerCase()) ? '<section class="member-group"><h2>Supervisor</h2>' + memberLine({ name: "monitor", role: "monitor", state: s.status === "running" ? "waiting" : "retired", brief: "Runtime supervisor · detects stalls and wakes members" }, s) + "</section>" : "");
+    }).join("") + (!memberSearch || "monitor".includes(memberSearch.toLowerCase()) ? '<section class="member-group"><h2>Supervisor</h2>' + memberLine({ name: "monitor", role: "monitor", state: s.status === "running" ? "waiting" : "retired", brief: "Runtime supervisor · detects stalls and wakes members" }, s) + monitorLine(s) + "</section>" : "");
   }
   function graph(s) {
     const count = replay === null ? s.posts.length : Math.min(replay, s.posts.length), posts = s.posts.slice(0, count), last = posts.at(-1);
-    const all = [...s.members, { name: "monitor", role: "monitor", state: s.status === "running" ? "waiting" : "retired", brief: "Supervises stalls and wakes members." }];
-    const nodes = all.filter((m) => !hideInactive || !["waiting", "retired"].includes(m.state) || m.role === "coordinator" || posts.some((p) => p.from === m.name || p.to.includes(m.name)));
+    const historic = (m) => {
+      if (replay === null)
+        return m;
+      const h = (s.history || []).filter((x) => x.name === m.name && x.post <= count).at(-1);
+      return h ? { ...m, state: h.state, taskState: h.taskState } : m;
+    };
+    const all = [...s.members.map(historic), { name: "monitor", role: "monitor", state: s.status === "running" ? "waiting" : "retired", brief: "Supervises stalls and wakes members." }];
+    const nodes = all.filter((m) => (replay === null || m.role === "monitor" || m.role === "coordinator" || !(s.history || []).length || (s.history || []).some((h) => h.name === m.name && h.post <= count)) && (!hideInactive || !["waiting", "retired"].includes(m.state) || m.role === "coordinator"));
     const pos = new Map, isHive = mode === "Hive", n = nodes.length, hexR = n > 8 ? 66 : 88;
     const cells = [[0, 0], [-1, 0], [1, -1], [-1, 1], [1, 0], [0, -1], [0, 1], [-2, 1], [2, -1], [-2, 0], [2, -2], [-1, -1], [1, 1]];
     const W = 700, H = isHive ? Math.max(360, n > 7 ? 520 : 390) : 340;
@@ -1741,7 +1778,7 @@
       if (isHive) {
         const title = m.role === "coordinator" ? "Coordinator" : m.role === "monitor" ? "Monitor" : short(m.name.replace(/-/g, " "), 22);
         const words = title.split(" "), line1 = words.length > 2 ? words.slice(0, 2).join(" ") : title, line2 = words.length > 2 ? words.slice(2).join(" ") : "";
-        drawing += '<polygon points="' + hex(hexR - 3) + '" fill="transparent" stroke="' + (selected ? "#a6a6a6" : "transparent") + '" stroke-width="2"/><text y="-' + hexR * 0.57 + '" text-anchor="middle" fill="#e7e7e7" font-size="13" font-weight="600">' + esc(line1) + "</text>" + (line2 ? '<text y="-' + (hexR * 0.57 - 15) + '" text-anchor="middle" fill="#e7e7e7" font-size="13" font-weight="600">' + esc(line2) + "</text>" : "") + '<text y="-' + (hexR * 0.57 - (line2 ? 29 : 15)) + '" text-anchor="middle" fill="#909093" font-size="11">' + (m.role === "coordinator" ? done + " of " + total + " done" : m.role === "monitor" ? "Watching" : finished ? "1/1" : "0/1") + '</text><g transform="translate(-26 2)">' + bee(m, i, true) + "</g>" + (active ? '<circle cx="26" cy="5" r="4" fill="#83b775" stroke="#151517"/>' : "");
+        drawing += '<polygon points="' + hex(hexR - 3) + '" fill="transparent" stroke="' + (selected ? "#a6a6a6" : "transparent") + '" stroke-width="2"/><text y="-' + hexR * 0.57 + '" text-anchor="middle" fill="#e7e7e7" font-size="13" font-weight="600">' + esc(line1) + "</text>" + (line2 ? '<text y="-' + (hexR * 0.57 - 15) + '" text-anchor="middle" fill="#e7e7e7" font-size="13" font-weight="600">' + esc(line2) + "</text>" : "") + '<text y="-' + (hexR * 0.57 - (line2 ? 29 : 15)) + '" text-anchor="middle" fill="#909093" font-size="11">' + (m.role === "coordinator" ? done + " of " + total + " done" : m.role === "monitor" ? s.monitor?.bridgeConnected ? "Watching" : "Waiting" : finished ? "1/1" : "0/1") + '</text><g transform="translate(-26 2)">' + bee(m, i, true) + "</g>" + (active ? '<circle cx="26" cy="5" r="4" fill="#83b775" stroke="#151517"/>' : "");
       } else {
         const width = Math.max(112, 40 + label.length * 6.2);
         drawing += '<rect x="' + -width / 2 + '" y="-14" width="' + width + '" height="28" rx="14" fill="#0b0b0b" stroke="' + (selected ? "#858588" : "#373739") + '"/><g transform="translate(' + (-width / 2 + 7) + ' -11) scale(.65)">' + bee(m, i) + '</g><text x="' + (-width / 2 + 34) + '" y="4" text-anchor="start" font-size="12" fill="#dedee0">' + esc(label) + "</text>" + (active ? '<circle cx="' + (-width / 2 + 30) + '" cy="-12" r="3.5" fill="#83b775"/>' : "");
@@ -1751,12 +1788,15 @@
     const detail = nodes.find((m) => m.name === graphMember);
     const xs = [...pos.values()].map((p) => p[0]), ys = [...pos.values()].map((p) => p[1]), padX = isHive ? hexR + 12 : 95, padY = isHive ? hexR * 0.866 + 12 : 28;
     const view = [Math.min(...xs) - padX, Math.min(...ys) - padY, Math.max(...xs) - Math.min(...xs) + 2 * padX, Math.max(...ys) - Math.min(...ys) + 2 * padY];
-    return '<section class="graph-shell"><div class="timeline"><button id="first" aria-label="First post">|‹</button><button id="prev" aria-label="Previous post">‹</button><button id="play" aria-label="Play or pause">' + (playing ? "Ⅱ" : "▶") + '</button><button id="next" aria-label="Next post">›</button><input id="replay" type="range" min="0" max="' + s.posts.length + '" value="' + count + '" aria-label="Replay timeline"><button id="live" class="' + (replay === null ? "live-button" : "") + '">● Live</button></div><div class="graph-tools"><span class="counter">' + count + " of " + s.posts.length + (last ? " · #" + last.id + " at " + fmt(last.at) : "") + '</span><div class="segmented"><button data-mode="Hive" class="' + (isHive ? "selected" : "") + '">Hive</button><button data-mode="Mentions" class="' + (!isHive ? "selected" : "") + '">Mentions</button></div></div><div class="graph-tools secondary-tools"><button id="hideInactive" aria-pressed="' + hideInactive + '" class="subtle-button"><span class="switch ' + (hideInactive ? "on" : "") + '"></span> Hide inactive</button><label>Speed <select id="pace"><option value=".5" ' + (pace === 0.5 ? "selected" : "") + '>0.5×</option><option value="1" ' + (pace === 1 ? "selected" : "") + '>1×</option><option value="2" ' + (pace === 2 ? "selected" : "") + '>2×</option></select></label><span class="push"></span><button id="minus" aria-label="Zoom out">−</button><button id="plus" aria-label="Zoom in">+</button><button id="zoom" aria-label="Expand">↗</button></div><div class="graph-canvas"><svg class="graph" style="width:' + Math.round(zoomLevel * 100) + '%" viewBox="' + view.join(" ") + '" aria-label="Swarm communication graph">' + drawing + '</svg></div><div class="legend">' + (isHive ? '<span><i class="line-key green"></i> Tasks done</span><span><i class="line-key blue"></i> Message just sent</span>' : '<span><i class="line-key gray"></i> Mention, width = count</span><span><i class="line-key blue"></i> Latest mention</span>') + '</div><small class="graph-note">Post history replay · bee activity reflects current session state</small></section>' + (last ? '<article class="replay-post"><div class="post-meta"><strong>' + esc(last.from) + '</strong><span class="post-target">→ ' + esc(last.to.map((x) => "@" + x).join(" ")) + '</span><span class="post-time">' + fmt(last.at) + '</span></div><div class="text"><span class="kind-chip ' + esc(last.kind) + '">[' + esc(last.kind) + "]</span> " + esc(last.text) + "</div></article>" : "") + (detail ? '<div class="card member-detail"><div class="row">' + avatar(detail, all.indexOf(detail)) + "<strong>@" + esc(detail.name) + "</strong> " + status(detail.state) + "</div><p>" + esc(detail.brief || "Supervises swarm activity") + "</p>" + (detail.sessionId ? '<button data-open="' + esc(detail.sessionId) + '">Open conversation</button>' : "") + "</div>" : "");
+    return '<section class="graph-shell ' + (graphExpanded ? "expanded" : "") + '"><div class="timeline"><button id="first" aria-label="First post">|‹</button><button id="prev" aria-label="Previous post">‹</button><button id="play" aria-label="Play or pause">' + (playing ? "Ⅱ" : "▶") + '</button><button id="next" aria-label="Next post">›</button><input id="replay" type="range" min="0" max="' + s.posts.length + '" value="' + count + '" aria-label="Replay timeline"><button id="live" class="' + (replay === null ? "live-button" : "") + '">● Live</button></div><div class="graph-tools"><span class="counter">' + count + " of " + s.posts.length + (last ? " · #" + last.id + " at " + fmt(last.at) : "") + '</span><div class="segmented"><button data-mode="Hive" class="' + (isHive ? "selected" : "") + '">Hive</button><button data-mode="Mentions" class="' + (!isHive ? "selected" : "") + '">Mentions</button></div></div><div class="graph-tools secondary-tools"><button id="hideInactive" aria-pressed="' + hideInactive + '" class="subtle-button"><span class="switch ' + (hideInactive ? "on" : "") + '"></span> Hide inactive</button><label>Speed <select id="pace"><option value=".5" ' + (pace === 0.5 ? "selected" : "") + '>0.5×</option><option value="1" ' + (pace === 1 ? "selected" : "") + '>1×</option><option value="2" ' + (pace === 2 ? "selected" : "") + '>2×</option></select></label><span class="push"></span><button id="minus" aria-label="Zoom out">−</button><button id="plus" aria-label="Zoom in">+</button><button id="zoom" aria-label="Expand">↗</button></div><div class="graph-canvas"><svg class="graph" style="width:' + Math.round(zoomLevel * 100) + '%" viewBox="' + view.join(" ") + '" aria-label="Swarm communication graph">' + drawing + '</svg></div><div class="legend">' + (isHive ? '<span><i class="line-key green"></i> Tasks done</span><span><i class="line-key blue"></i> Message just sent</span>' : '<span><i class="line-key gray"></i> Mention, width = count</span><span><i class="line-key blue"></i> Latest mention</span>') + '</div><small class="graph-note">Post history replay · recorded agent states</small></section>' + (last ? '<article class="replay-post"><div class="post-meta"><strong>' + esc(last.from) + '</strong><span class="post-target">→ ' + esc(last.to.map((x) => "@" + x).join(" ")) + '</span><span class="post-time">' + fmt(last.at) + '</span></div><div class="text"><span class="kind-chip ' + esc(last.kind) + '">[' + esc(last.kind) + "]</span> " + esc(last.text) + "</div></article>" : "") + (detail ? '<div class="card member-detail"><div class="row">' + avatar(detail, all.indexOf(detail)) + "<strong>@" + esc(detail.name) + "</strong> " + status(detail.state) + "</div><p>" + esc(detail.brief || "Supervises swarm activity") + "</p>" + (detail.sessionId ? '<button data-open="' + esc(detail.sessionId) + '">Open conversation</button>' : "") + "</div>" : "");
   }
   function render() {
+    const settingsDraft = root.querySelector("#swarmSettings") ? Object.fromEntries(new FormData(root.querySelector("#swarmSettings"))) : null;
+    if (settingsDraft && settingsOpen)
+      swarmSettings = settingsDraft;
     const startForm = root.querySelector("#start"), startVisible = newFormOpen, startDraft = startForm?.querySelector("textarea")?.value || "", previous = root.querySelector("#message textarea"), draft = previous?.value || "", to = root.querySelector("#message select")?.value, active = document.activeElement?.id, field = document.activeElement?.name, formId = document.activeElement?.form?.id, selection = document.activeElement?.selectionStart ?? null;
     const s = current();
-    root.innerHTML = '<header><div class="header-title">' + (s ? esc(s.title) : "Swarm") + '</div><div class="header-actions">' + (s ? status(s.status) : "") + '<button id="refresh" class="subtle-button" title="Refresh" aria-label="Refresh">↻</button>' + (s ? '<button id="new" class="subtle-button" title="New swarm" aria-label="New swarm">+</button>' : "") + (s?.status === "running" ? '<button id="stop" class="subtle-button" title="Stop swarm" aria-label="Stop swarm">■</button>' : "") + "</div></header>" + (s ? '<nav class="tabs">' + ["Overview", "Board", "Members", "Graph"].map((t) => '<button data-tab="' + t + '" class="' + (tab === t ? "selected" : "") + '">' + t + (t === "Board" ? "<span>" + s.posts.length + "</span>" : t === "Members" ? "<span>" + s.members.filter((m) => m.state !== "retired").length + "</span>" : "") + "</button>").join("") + "</nav>" : "") + (error ? '<div class="notice error">' + esc(error) + "</div>" : "") + "<main>" + (!s ? '<h1>Start a swarm</h1><p class="muted">Use the current conversation or start a new one.</p>' : (swarms.length > 1 ? '<div class="swarm-switch"><select id="swarmSelect">' + swarms.map((x) => '<option value="' + esc(x.id) + '" ' + (x.id === s.id ? "selected" : "") + ">" + esc(x.key + " · " + x.title) + "</option>").join("") + "</select></div>" : "") + { Overview: overview, Board: board, Members: members, Graph: graph }[tab](s)) + '<form id="start" class="card start-card" ' + (s ? "hidden" : "") + '><h2>New swarm</h2><p class="muted">' + esc(directory || "Open a project") + " · " + esc(session?.title || "New coordinator conversation") + '</p><textarea name="task" required maxlength="12000" placeholder="Describe the task and acceptance criteria"></textarea><button class="primary" ' + (!directory || session?.busy ? "disabled" : "") + ">Launch swarm</button>" + (session?.busy ? "<small> Wait for current turn to finish.</small>" : "") + "</form></main>";
+    root.innerHTML = '<div class="sticky-top"><header><div class="header-title">' + (s ? esc(s.title) : "Swarm") + '</div><div class="header-actions">' + (s ? status(s.status) : "") + '<button id="settings" class="subtle-button" title="Swarm model settings" aria-label="Swarm model settings">⚙</button><button id="refresh" class="subtle-button" title="Refresh" aria-label="Refresh">↻</button>' + (s ? '<button id="delete" class="subtle-button" title="Delete swarm" aria-label="Delete swarm">&#128465;</button><button id="new" class="subtle-button" title="New swarm" aria-label="New swarm">+</button>' : "") + (s?.status === "running" ? '<button id="stop" class="subtle-button" title="Stop swarm" aria-label="Stop swarm">■</button>' : "") + "</div></header>" + (s ? '<nav class="tabs">' + ["Overview", "Board", "Members", "Graph"].map((t) => '<button data-tab="' + t + '" class="' + (tab === t ? "selected" : "") + '">' + t + (t === "Board" ? "<span>" + s.posts.length + "</span>" : t === "Members" ? "<span>" + s.members.filter((m) => m.state !== "retired").length + "</span>" : "") + "</button>").join("") + "</nav>" : "") + "</div>" + (error ? '<div class="notice error">' + esc(error) + "</div>" : "") + "<main>" + (deleteConfirm && s ? '<section class="card confirm-card"><h2>Delete ' + esc(s.key) + '?</h2><p>Stops the swarm and removes its board and graph history. Chat conversations and files are kept.</p><div class="row"><button id="confirmDelete" class="danger-button">Delete swarm</button><button id="cancelDelete">Cancel</button></div></section>' : "") + (stopConfirm && s ? '<section class="card confirm-card"><h2>Stop swarm?</h2><p>Interrupts agents and preserves the board.</p><div class="row"><button id="confirmStop" class="danger-button">Stop swarm</button><button id="cancelStop">Cancel</button></div></section>' : "") + (settingsOpen ? '<form id="swarmSettings" class="card settings-card"><h2>Swarm models</h2><p class="muted">Leave blank to inherit the coordinator model. Applies to new swarms.</p><label>Worker model<input name="workerModel" list="swarm-models" value="' + esc(swarmSettings.workerModel) + '" placeholder="Inherit · provider/model"></label><label>Verifier model<input name="verifierModel" list="swarm-models" value="' + esc(swarmSettings.verifierModel) + '" placeholder="Inherit worker model"></label><datalist id="swarm-models">' + availableModels.map((m) => '<option value="' + esc(m.id) + '">' + esc(m.name) + "</option>").join("") + '</datalist><div class="row"><button class="primary">Save</button><button type="button" id="cancelSettings">Cancel</button></div></form>' : "") + (!s ? '<h1>Start a swarm</h1><p class="muted">Use the current conversation or start a new one.</p>' : (swarms.length > 1 ? '<div class="swarm-switch"><select id="swarmSelect">' + swarms.map((x) => '<option value="' + esc(x.id) + '" ' + (x.id === s.id ? "selected" : "") + ">" + esc(x.key + " · " + x.title) + "</option>").join("") + "</select></div>" : "") + { Overview: overview, Board: board, Members: members, Graph: graph }[tab](s)) + '<form id="start" class="card start-card" ' + (s ? "hidden" : "") + '><h2>New swarm</h2><p class="muted">' + esc(directory || "Open a project") + " · " + esc(session?.title || "New coordinator conversation") + '</p><textarea name="task" required maxlength="12000" placeholder="Describe the task and acceptance criteria"></textarea><button class="primary" ' + (!directory || session?.busy ? "disabled" : "") + ">Launch swarm</button>" + (session?.busy ? "<small> Wait for current turn to finish.</small>" : "") + "</form></main>";
     if (tab === "Board" && s && s.posts.length > lastFeedCount && follow) {
       lastFeedCount = s.posts.length;
       root.querySelector("#feed")?.lastElementChild?.scrollIntoView({ block: "nearest" });
@@ -1780,10 +1820,51 @@
         } catch {}
     }
     root.querySelector("#refresh").onclick = refresh;
+    root.querySelector("#settings")?.addEventListener("click", async () => {
+      try {
+        settingsOpen = !settingsOpen;
+        if (settingsOpen) {
+          swarmSettings = await api("/settings");
+          render();
+          api("/models", null, { directory: directory || "" }).then((models) => {
+            if (Array.isArray(models)) {
+              availableModels = models;
+              if (settingsOpen)
+                render();
+            }
+          }).catch(() => {});
+        } else
+          render();
+      } catch (e) {
+        error = e.message;
+        render();
+      }
+    });
+    root.querySelector("#cancelSettings")?.addEventListener("click", () => {
+      settingsOpen = false;
+      render();
+    });
+    root.querySelector("#swarmSettings")?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      try {
+        swarmSettings = await api("/settings", Object.fromEntries(new FormData(e.target)));
+        settingsOpen = false;
+        render();
+      } catch (e) {
+        error = e.message;
+        render();
+      }
+    });
     root.querySelector("#start").onsubmit = async (e) => {
       e.preventDefault();
       const task = new FormData(e.target).get("task");
-      const result = await action("/start", { task, directory, sessionId: session?.id || null, model: session?.model });
+      let result;
+      try {
+        result = await launch(task);
+      } catch (e) {
+        error = e.message;
+        render();
+      }
       if (result) {
         selected = result.id;
         root.querySelector("#start").reset();
@@ -1801,14 +1882,41 @@
     root.querySelector("#swarmSelect")?.addEventListener("change", (e) => {
       selected = e.target.value;
       replay = null;
+      deleteConfirm = false;
+      stopConfirm = false;
       render();
     });
     root.querySelector("#stop")?.addEventListener("click", () => {
-      if (confirm("Stop every member in this swarm?"))
-        action("/stop", { id: s.id });
+      stopConfirm = !stopConfirm;
+      deleteConfirm = false;
+      render();
+    });
+    root.querySelector("#delete")?.addEventListener("click", () => {
+      deleteConfirm = !deleteConfirm;
+      stopConfirm = false;
+      render();
+    });
+    root.querySelector("#cancelDelete")?.addEventListener("click", () => {
+      deleteConfirm = false;
+      render();
+    });
+    root.querySelector("#confirmDelete")?.addEventListener("click", async () => {
+      deleteConfirm = false;
+      await action("/delete", { id: s.id });
+      render();
+    });
+    root.querySelector("#cancelStop")?.addEventListener("click", () => {
+      stopConfirm = false;
+      render();
+    });
+    root.querySelector("#confirmStop")?.addEventListener("click", async () => {
+      stopConfirm = false;
+      await action("/stop", { id: s.id });
+      render();
     });
     root.querySelectorAll("[data-tab]").forEach((el) => el.onclick = () => {
       tab = el.dataset.tab;
+      graphExpanded = false;
       render();
     });
     root.querySelectorAll("[data-mode]").forEach((el) => el.onclick = () => {
@@ -1827,7 +1935,10 @@
         }
       };
     });
-    root.querySelector("#zoom")?.addEventListener("click", () => root.querySelector(".graph-shell").classList.toggle("expanded"));
+    root.querySelector("#zoom")?.addEventListener("click", () => {
+      graphExpanded = !graphExpanded;
+      render();
+    });
     root.querySelector("#hideInactive")?.addEventListener("click", () => {
       hideInactive = !hideInactive;
       render();
@@ -1906,6 +2017,13 @@
     });
     root.querySelector("#replay")?.addEventListener("input", (e) => {
       replay = Number(e.target.value);
+      const c = root.querySelector(".counter");
+      if (c)
+        c.textContent = replay + " of " + s.posts.length;
+    });
+    root.querySelector("#replay")?.addEventListener("change", () => {
+      clearInterval(timer);
+      playing = false;
       render();
     });
     root.querySelector("#live")?.addEventListener("click", () => {
@@ -1967,8 +2085,10 @@
       throw Error("Open a project first.");
     if (session?.busy)
       throw Error("Wait for the current turn to finish.");
-    const s = await api("/start", { task: args.trim(), directory, sessionId: session?.id || null, model: session?.model });
-    await host.toast({ kind: "success", message: s.key + " started. Open Swarm from the extension rail." }).catch(() => {});
+    const s = await launch(args.trim());
+    selected = s.id;
+    await refresh();
+    await host.toast({ kind: "success", message: s.key + " created. Coordinator will wake when the project bridge is ready." }).catch(() => {});
     return null;
   });
 })();

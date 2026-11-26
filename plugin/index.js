@@ -11,21 +11,35 @@ const definitions=[
  ['read','Read latest shared board posts; after is an optional post number.',{after:{type:'integer'}},[]],
  ['status','Read current swarm status, workers, tasks and board.',{},[]],
  ['add','Coordinator only: recruit a named worker or verifier; deferred recruits sleep until mentioned. Assign disjoint relative paths.',{name:string,role:{type:'string',enum:['worker','verifier']},brief:string,paths:list,model:string,deferred:boolean},['name','role','brief']],
- ['post','Post on the shared board; recipient names or all wake sleeping recipients. Use done to report completion, verified/changes for verifier result.',{to:list,text:string,kind:{type:'string',enum:['message','brief','question','report','done','verified','changes','blocker']}},['to','text']],
+ ['post','Post on the shared board; @mentions in text or recipient names wake sleeping recipients. Unaddressed posts are board-only. Use done to report completion, verified/changes for verifier result.',{to:list,text:string,kind:{type:'string',enum:['message','brief','question','report','done','verified','changes','blocker']}},['text']],
  ['retire','Coordinator only: retire a worker.',{name:string},['name']],
  ['finish','Coordinator only: complete the swarm after independent verification, or explicitly report failure.',{summary:string,failed:boolean},['summary']]
 ];
 export default {id:'oc-swarm-tools',async setup(ctx){
  let stopped=false,timer;
  const poll=async()=>{try{
-   const {job}=await request('bridge/poll',{},AbortSignal.timeout(5000));
+   const {job}=await request('bridge/poll',{directory:ctx.location.directory},AbortSignal.timeout(5000));
    if(job){try{
-    const result=job.op==='create'?await ctx.session.create(job.input):job.op==='wake'?await ctx.session.synthetic(job.input):(()=>{throw Error('Unknown bridge job');})();
+    const result=job.op==='create'?await ctx.session.create(job.input):job.op==='wake'?await ctx.session.synthetic(job.input):job.op==='get'?await ctx.session.get(job.input):job.op==='models'?((v)=>{const items=Array.isArray(v)?v:v?.data||[];return items.filter(m=>m.enabled!==false&&(!m.type||m.type==='chat')).map(m=>({id:m.providerID+'/'+(m.id||m.modelID),name:m.name||m.id}));})(await ctx.model.list({types:['chat']})):(()=>{throw Error('Unknown bridge job');})();
     await request('bridge/result',{id:job.id,result},AbortSignal.timeout(5000));
    }catch(e){await request('bridge/result',{id:job.id,error:String(e.message||e)},AbortSignal.timeout(5000)).catch(()=>{});}}
  }catch{}finally{if(!stopped){timer=setTimeout(poll,900);timer.unref?.();}
 }};
+ // The context hook is called for each model request, including after tool calls.
+ // Keep board content out of the user transcript; pass it as internal context.
+ await ctx.session.hook('context',async input=>{
+  try{
+   const snapshot=await request('context',{sessionId:input.sessionID,directory:ctx.location.directory},AbortSignal.timeout(2500));
+   if(!snapshot?.text)return;
+   input.system.push({type:'text',text:snapshot.text});
+   if(snapshot.ids?.length)await request('context/ack',{sessionId:input.sessionID,ids:snapshot.ids},AbortSignal.timeout(2500));
+  }catch{}
+ });
+ await ctx.session.hook('experimental.idle',async input=>{await request('idle',{sessionId:input.sessionID,directory:ctx.location.directory},AbortSignal.timeout(2500)).catch(()=>{});});
  void poll();
+ // Native deletion events also cover coordinator deletion from the OpenChamber chat list.
+ const deleted=(async()=>{try{for await(const e of ctx.event.subscribe({types:['session.deleted']})){if(stopped)break;await request('session-deleted',{sessionId:e.data.sessionID,directory:e.location?.directory||ctx.location.directory},AbortSignal.timeout(2500)).catch(()=>{});}}catch{}})();
+
  await ctx.tool.transform(tools=>{for(const [action,description,properties,required] of definitions)tools.add({name:'swarm_'+action,description,options:{codemode:false},input:{type:'object',properties,required,additionalProperties:false},async execute(input,context){return bridge(action,context.sessionID,input,context.signal);}});});
  return ()=>{stopped=true;clearTimeout(timer);};
 }};
