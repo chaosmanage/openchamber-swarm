@@ -5,3 +5,5 @@ These are Chromium screenshots of the actual bundled extension rendered with a s
 - hive.png
 - mentions.png
 - mobile-hive.png
+
+Version 0.3.0 visual reference: https://flaviocopes.com/antigravity-swarm/ (public Antigravity screenshots). The preview images are our own fixture renderings, not copied screenshots.
