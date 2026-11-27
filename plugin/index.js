@@ -15,12 +15,41 @@ const definitions=[
  ['retire','Coordinator only: retire a worker.',{name:string},['name']],
  ['finish','Coordinator only: complete the swarm after independent verification, or explicitly report failure.',{summary:string,failed:boolean},['summary']]
 ];
+const swarmAgent='build';
+async function runJob(ctx,{op,input}){
+ switch(op){
+  case 'create':
+   return ctx.session.create({...input,agent:swarmAgent});
+  case 'seed':
+  case 'wake': {
+   // V2 resolves the agent from the session, not prompt or synthetic input.
+   // Check every dispatch: OpenChamber can reselect Plan and older swarms may still use it.
+   const {agent}=await ctx.session.get({sessionID:input.sessionID});
+   if(agent!==swarmAgent)await ctx.session.switchAgent({sessionID:input.sessionID,agent:swarmAgent});
+   return op==='seed'?ctx.session.prompt(input):ctx.session.synthetic(input);
+  }
+  case 'get':
+   return ctx.session.get(input);
+  case 'switch-model':
+   await ctx.session.switchModel(input);
+   return {ok:true};
+  case 'review':
+   return ctx.experimental.generate.text(input);
+  case 'models': {
+   const result=await ctx.model.list({types:['chat']});
+   const models=Array.isArray(result)?result:result?.data||[];
+   return models.filter(m=>m.enabled!==false&&(!m.type||m.type==='chat')).map(m=>({id:m.providerID+'/'+(m.id||m.modelID),name:m.name||m.id}));
+  }
+  default:
+   throw Error('Unknown bridge job');
+ }
+}
 export default {id:'oc-swarm-tools',async setup(ctx){
  let stopped=false,timer;
  const poll=async()=>{try{
    const {job}=await request('bridge/poll',{directory:ctx.location.directory},AbortSignal.timeout(5000));
    if(job){const execute=async()=>{try{
-    const result=job.op==='create'?await ctx.session.create(job.input):job.op==='wake'?await ctx.session.synthetic(job.input):job.op==='seed'?await ctx.session.prompt(job.input):job.op==='get'?await ctx.session.get(job.input):job.op==='switch-model'?(await ctx.session.switchModel(job.input),{ok:true}):job.op==='review'?await ctx.experimental.generate.text(job.input):job.op==='models'?((v)=>{const items=Array.isArray(v)?v:v?.data||[];return items.filter(m=>m.enabled!==false&&(!m.type||m.type==='chat')).map(m=>({id:m.providerID+'/'+(m.id||m.modelID),name:m.name||m.id}));})(await ctx.model.list({types:['chat']})):(()=>{throw Error('Unknown bridge job');})();
+     const result=await runJob(ctx,job);
     await request('bridge/result',{id:job.id,result},AbortSignal.timeout(5000));
    }catch(e){await request('bridge/result',{id:job.id,error:String(e.message||e)},AbortSignal.timeout(5000)).catch(()=>{});}};
    if(job.op==='review')void execute();else await execute();}
@@ -43,7 +72,7 @@ export default {id:'oc-swarm-tools',async setup(ctx){
  const deleted=(async()=>{try{for await(const e of ctx.event.subscribe({types:['session.deleted']})){if(stopped)break;await request('session-deleted',{sessionId:e.data.sessionID,directory:e.location?.directory||ctx.location.directory},AbortSignal.timeout(2500)).catch(()=>{});}}catch{}})();
 
  // Native commands run after the host applies the composer model selection.
- await ctx.command.transform(commands=>commands.add({name:'swarm',description:'Start a collaborative swarm using the selected model',async execute({sessionID,prompt}){
+  await ctx.command.transform(commands=>commands.add({name:'swarm',description:'Start a collaborative swarm with the Build agent and selected model',async execute({sessionID,prompt}){
   const task=String(prompt.text||'').trim();if(!task)throw Error('Usage: /swarm <task and acceptance criteria>');
   const info=await ctx.session.get({sessionID});if(!info?.model?.providerID||!info.model.id)throw Error('Choose a model in the chat before starting a swarm.');
   let swarm;try{swarm=await request('start',{task,sessionId:sessionID,directory:ctx.location.directory,model:info.model.providerID+'/'+info.model.id,modelRef:info.model},AbortSignal.timeout(10000));}

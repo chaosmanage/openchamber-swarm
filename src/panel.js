@@ -6,9 +6,11 @@ let lastFeedCount=0;
 let boardSwarm='',newPosts=0,followScroll=false,jumpLatest=false,renderedSwarmId='',resetScrollOnRender=false;
 const boardDrafts=new Map();
 const sendingMessages=new Set();
+const overviewDisclosures=new Map();
 let directory=null,session=null,swarms=[],selected='',tab='Overview',mode='Hive',filter='',memberFilter='',replay=null,playing=false,timer=null,error='',loading=false,ready=false,graphMember='',follow=true,memberSearch='',hideInactive=false,zoomLevel=1,pace=1,newFormOpen=false,graphExpanded=false,settingsOpen=false,deleteConfirm=false,stopConfirm=false,swarmSettings={coordinatorModel:'',workerModel:'',verifierModel:'',monitorModel:'',monitorReasoning:false},availableModels=[];
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmt=t=>new Date(t).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+const blockReason=m=>m.error||m.blockedReason||m.pendingReason||m.lastReply||'This member is blocked and needs intervention.';
 const palette=['#f5bb51','#e3cc55','#f47a6b','#b66af0','#68bbd5','#75c47e','#eaa75b','#a5a2ec','#e68aa5','#69c8df','#d5a9df','#b0b9c9'];
 const roleColor=(m,i=0)=>m.role==='coordinator'?'#f9be51':m.role==='verifier'?'#7793f9':m.role==='monitor'?'#bd9afa':palette[(i+1)%palette.length];
 const glyphs={Overview:'◉',Board:'▤',Members:'♟',Graph:'⬡',coordinator:'♛',monitor:'◈',verifier:'✓',worker:'✦',brief:'▣',done:'✓',verified:'✓',changes:'↺',question:'?',blocker:'!',report:'▤',stall:'◈',instruction:'➜',message:'↗'};
@@ -56,12 +58,95 @@ async function refresh(){if(!ready||loading||(!directory&&!session))return;loadi
 async function action(path,body){try{error='';const result=await api(path,body);await refresh();return result;}catch(e){error=e.message;render();return null;}}
 const short=(t,n=100)=>String(t||'').length>n?String(t).slice(0,n-1)+'…':String(t||'');
 const taskLabel=m=>short((m.brief||m.name).split(/[\n.]/)[0],86);
-const memberLine=(m,s)=>{const i=s.members.indexOf(m),last=s.posts.findLast(p=>p.from===m.name),reason=m.error||m.blockedReason||m.pendingReason||m.lastReply||'This member is blocked and needs intervention.';return '<div class="member-line '+(m.state==='blocked'?'needs-attention':'')+'" '+(m.sessionId&&m.state!=='blocked'?'data-open="'+esc(m.sessionId)+'" role="button" tabindex="0"':'')+'>'+avatar(m,Math.max(0,i))+'<div class="member-copy"><div class="member-top"><strong>@'+esc(m.name)+'</strong><span class="member-state '+esc(m.state)+'">'+(m.role==='coordinator'?'Coordinator · '+({active:'Working',waiting:'Standing by',dispatching:'Waking',blocked:'Needs attention',retired:'Retired'}[m.state]||m.state):m.role==='monitor'?'Monitor':m.state==='active'?'Working':m.state==='waiting'?'Standing by':m.state==='retired'?'Retired':m.state==='blocked'?'Needs attention':'Waking')+'</span><span class="member-model">'+esc(m.model||'')+(m.pending?' · '+m.pending+' pending':'')+(m.lastPost?' · #'+m.lastPost:'')+'</span></div><div class="member-brief">'+esc(taskLabel(m))+'</div><div class="member-last">'+esc(short(last?.text||m.lastReply||'No posts yet',160))+'</div>'+(m.state==='blocked'?'<div class="attention-reason"><strong>Reason:</strong> '+esc(reason)+'</div>':m.error?'<div class="error">'+esc(m.error)+'</div>':'')+'</div>'+(m.state==='blocked'&&m.sessionId?'<button type="button" data-open-chat="'+esc(m.sessionId)+'" class="attention-open">Open chat</button>':'')+(m.state==='blocked'&&s.status==='running'?'<button type="button" data-retry="'+esc(m.name)+'" class="subtle-button">Retry</button>':'')+'</div>';};
-function monitorLine(s){const m=s.monitor||{};const live=s.status==='running'&&m.lastCheck&&Date.now()-m.lastCheck<45000;return '<section class="card monitor-panel"><div class="monitor-head">'+avatar({role:'monitor',state:live?'active':'waiting'})+'<div><strong>Monitor</strong><div class="muted">'+esc(m.action||'Awaiting first check')+'</div></div><span class="push pill '+(live?'active':'waiting')+'"><i class="dot"></i>'+(live?'Watching':s.status==='running'?'Starting':'Stopped')+'</span></div><div class="monitor-meta"><span>Checks <strong>'+Number(m.checks||0)+'</strong></span><span>Last <strong>'+(m.lastCheck?fmt(m.lastCheck):'—')+'</strong></span><span>Next <strong>'+(m.nextCheck&&s.status==='running'?fmt(m.nextCheck):'—')+'</strong></span><span>Bridge <strong class="'+(m.bridgeConnected?'bridge-online':'')+'">'+(m.bridgeConnected?'Connected':'Waiting')+'</strong></span></div>'+(m.errors?.length?'<details class="monitor-errors"><summary>'+m.errors.length+' session check issue(s)</summary>'+m.errors.map(e=>'<p>'+esc(e)+'</p>').join('')+'</details>':'')+'</section>';}
+const memberLine=(m,s)=>{const i=s.members.indexOf(m),last=s.posts.findLast(p=>p.from===m.name);return '<div class="member-line '+(m.state==='blocked'?'needs-attention':'')+'" '+(m.sessionId&&m.state!=='blocked'?'data-open="'+esc(m.sessionId)+'" role="button" tabindex="0"':'')+'>'+avatar(m,Math.max(0,i))+'<div class="member-copy"><div class="member-top"><strong>@'+esc(m.name)+'</strong><span class="member-state '+esc(m.state)+'">'+(m.role==='coordinator'?'Coordinator · '+({active:'Working',waiting:'Standing by',dispatching:'Waking',blocked:'Needs attention',retired:'Retired'}[m.state]||m.state):m.role==='monitor'?'Monitor':m.state==='active'?'Working':m.state==='waiting'?'Standing by':m.state==='retired'?'Retired':m.state==='blocked'?'Needs attention':'Waking')+'</span><span class="member-model">'+esc(m.model||'')+(m.pending?' · '+m.pending+' pending':'')+(m.lastPost?' · #'+m.lastPost:'')+'</span></div><div class="member-brief">'+esc(taskLabel(m))+'</div><div class="member-last">'+esc(short(last?.text||m.lastReply||'No posts yet',160))+'</div>'+(m.state==='blocked'?'<div class="attention-reason"><strong>Reason:</strong> '+esc(blockReason(m))+'</div>':m.error?'<div class="error">'+esc(m.error)+'</div>':'')+'</div>'+(m.state==='blocked'&&m.sessionId?'<button type="button" data-open-chat="'+esc(m.sessionId)+'" class="attention-open">Open chat</button>':'')+(m.state==='blocked'&&s.status==='running'?'<button type="button" data-retry="'+esc(m.name)+'" class="subtle-button">Retry</button>':'')+'</div>';};
+function monitorStatus(s){
+ if(s.status!=='running')return {state:'retired',label:'Stopped'};
+ if(s.monitor?.lastCheck&&Date.now()-s.monitor.lastCheck<45000)return {state:'active',label:'Watching'};
+ return {state:'waiting',label:'Starting'};
+}
+function monitorMeta(s){
+ const m=s.monitor||{};
+ return `<div class="monitor-meta">
+  <span>Checks <strong>${Number(m.checks||0)}</strong></span>
+  <span>Last <strong>${m.lastCheck?fmt(m.lastCheck):'—'}</strong></span>
+  <span>Next <strong>${m.nextCheck&&s.status==='running'?fmt(m.nextCheck):'—'}</strong></span>
+  <span>Bridge <strong class="${m.bridgeConnected?'bridge-online':''}">${m.bridgeConnected?'Connected':'Waiting'}</strong></span>
+ </div>`;
+}
+function monitorLine(s){
+ const m=s.monitor||{}, {state,label}=monitorStatus(s);
+ return '<section class="card monitor-panel"><div class="monitor-head">'+avatar({role:'monitor',state:state==='active'?'active':'waiting'})+'<div><strong>Monitor</strong><div class="muted">'+esc(m.action||'Awaiting first check')+'</div></div><span class="push pill '+state+'"><i class="dot"></i>'+label+'</span></div>'+monitorMeta(s)+(m.errors?.length?'<details class="monitor-errors"><summary>'+m.errors.length+' session check issue(s)</summary>'+m.errors.map(e=>'<p>'+esc(e)+'</p>').join('')+'</details>':'')+'</section>';
+}
+const isWorking=m=>['active','dispatching'].includes(m.state);
+const hasReported=m=>['reported','verified'].includes(m.taskState);
+function overviewMemberDetails(m,s){
+ const blocked=m.state==='blocked';
+ const brief=m.brief===s.task&&m.role==='coordinator'?'':m.brief;
+ const reason=blocked?blockReason(m):m.error;
+ const last=s.posts.findLast(p=>p.from===m.name),latest=last?.text||m.lastReply;
+ const update=latest!==reason&&latest!==m.brief?latest:'';
+ const meta=[m.model,m.pending?m.pending+' pending':'',isWorking(m)&&hasReported(m)?memberCue(m).label:''].filter(Boolean);
+ const canRetry=blocked&&s.status==='running';
+ return `
+  ${reason?`<div class="overview-member-context"><h3>${blocked?'Blocked reason':'Error'}</h3><p class="overview-error">${esc(reason)}</p></div>`:''}
+  ${brief?`<div class="overview-member-context"><h3>Brief</h3><p>${esc(brief)}</p></div>`:''}
+  ${update?`<div class="overview-member-context"><h3>Latest update${last?' · #'+esc(last.id):''}</h3><p>${esc(short(update,240))}</p></div>`:''}
+  ${m.paths?.length?`<div class="overview-paths" aria-label="Assigned paths">${m.paths.map(p=>'<code>'+esc(p)+'</code>').join('')}</div>`:''}
+  ${meta.length?`<p class="overview-member-meta">${esc(meta.join(' · '))}</p>`:''}
+  ${!reason&&!brief&&!update&&!m.paths?.length&&!meta.length&&!m.sessionId?'<p>No additional details yet.</p>':''}
+  ${m.sessionId||canRetry?`<div class="overview-member-actions">
+   ${m.sessionId?`<button type="button" data-overview-action="chat" data-open-chat="${esc(m.sessionId)}">Open chat <span aria-hidden="true">↗</span></button>`:''}
+   ${canRetry?`<button type="button" data-overview-action="retry" data-retry="${esc(m.name)}">Retry</button>`:''}
+  </div>`:''}`;
+}
 function overview(s){
- const tasks=s.members.filter(m=>m.role!=='coordinator'),finished=m=>['reported','verified'].includes(m.taskState),done=tasks.filter(finished),running=tasks.filter(m=>['active','dispatching'].includes(m.state)&&!finished(m)),up=tasks.filter(m=>!finished(m)&&!running.includes(m)),pct=tasks.length?Math.round(done.length/tasks.length*100):0;
- const row=m=>'<div class="task-row" '+(m.sessionId?'data-open="'+esc(m.sessionId)+'" role="button" tabindex="0"':'')+'><span class="task-indicator '+(finished(m)?'complete':m.state==='active'?'in-progress':'queued')+'">'+(finished(m)?'✓':'')+'</span><div class="task-copy"><div class="task-top"><strong>'+esc(taskLabel(m))+'</strong><span class="agent-tag">'+bee(m,s.members.indexOf(m))+' '+esc(m.name)+'</span></div><small>'+esc(short(s.posts.findLast(p=>p.from===m.name)?.text||m.brief,110))+'</small></div></div>';
- return '<section class="goal"><div class="eyebrow">GOAL</div><h1>'+esc(s.title)+'</h1><p>'+esc(s.task===s.title?'':s.task)+'</p></section><section class="card running-card"><h2><i class="blue-dot"></i> Running <span class="muted">'+running.length+'</span></h2>'+(running.length?running.map(row).join(''):'<p class="muted empty-text">No tasks currently running.</p>')+'</section><section class="card completion-card"><div class="completion-heading"><span class="mini-ring" style="--progress:'+pct+'%"></span><strong>'+done.length+' of '+tasks.length+'</strong> <span>tasks done</span><span class="push muted">'+(tasks.length-done.length)+' open</span></div>'+ (done.length?done.map(row).join(''):'<p class="muted empty-text">No tasks completed yet.</p>')+(up.length?'<div class="eyebrow up-next">UP NEXT · '+up.length+'</div>'+up.map(row).join(''):'')+'</section><h2 class="section-title">Threads</h2><section class="threads">'+(tasks.length?tasks.map(m=>'<details class="card thread"><summary><i class="thread-dot '+(finished(m)?'complete':'')+'"></i><strong>'+esc(taskLabel(m))+'</strong><span class="muted">'+(finished(m)?'Done':m.state==='active'?'Moving':m.state==='blocked'?'Blocked':'Waiting')+'</span><span class="push thread-progress"><i style="width:'+(finished(m)?100:0)+'%"></i></span><small>'+(finished(m)?'1/1':'0/1')+'</small><span class="muted">›</span></summary><p>'+esc(m.brief)+'</p>'+row(m)+'</details>').join(''):'<p class="muted">The coordinator is preparing the team.</p>')+'</section><h2 class="section-title">Team</h2><section class="roster">'+s.members.map(m=>memberLine(m,s)).join('')+memberLine({name:'monitor',role:'monitor',state:s.status==='running'?(s.monitor?.bridgeConnected?'active':'waiting'):'retired',brief:'Supervises stalls and wakes members.'},s)+'</section>'+monitorLine(s)+(s.summary?'<div class="card"><h2>Result</h2><p>'+esc(s.summary)+'</p></div>':'');
+ const open=overviewDisclosures.get(s.id);
+ const tasks=s.members.filter(m=>m.role!=='coordinator');
+ const reported=tasks.filter(hasReported).length;
+ const working=s.members.filter(isWorking).length;
+ const blocked=s.members.filter(m=>m.state==='blocked').length;
+ const goal=s.task||s.title;
+ const longGoal=goal.length>260||goal.split('\n').length>3;
+ const monitor=s.monitor||{},monitorCue=monitorStatus(s);
+ const row=(m,i,label,tone,body)=>`
+  <details class="overview-member" data-overview-item="${esc(m.name)}"${open?.has(m.name)?' open':''}>
+   <summary>
+    ${avatar(m,i)}
+    <span class="overview-member-name"><strong title="${esc(m.name)}">${m.role==='monitor'?'Monitor':'@'+esc(m.name)}</strong><span>${m.role==='monitor'?'Supervisor':esc(m.role)}</span></span>
+    <span class="overview-state ${esc(tone)}"><i class="dot" aria-hidden="true"></i>${esc(label)}</span>
+    <svg class="overview-chevron" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m6 4 4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+   </summary>
+   <div class="overview-member-body">${body}</div>
+  </details>`;
+ return `<div class="overview">
+  <section class="overview-section" aria-labelledby="overview-goal">
+   <div class="overview-heading"><h1 id="overview-goal">GOAL</h1><span>${esc(s.key)}</span></div>
+   ${longGoal?`<details class="overview-goal-detail" data-overview-item=":goal"${open?.has(':goal')?' open':''}>
+    <summary><span class="overview-goal-snippet">${esc(short(goal,260))}</span><span class="overview-goal-more">Read full goal</span><span class="overview-goal-less">Show less</span></summary>
+    <p>${esc(goal)}</p>
+   </details>`:`<p class="overview-goal-copy">${esc(goal)}</p>`}
+   <dl class="overview-metrics" aria-label="Swarm progress">
+    <div><dt>Reported or verified</dt><dd>${reported}<span> / ${tasks.length}</span>${tasks.length?`<progress aria-label="Tasks reported or verified" value="${reported}" max="${tasks.length}"></progress>`:''}</dd></div>
+    <div><dt>Active now</dt><dd>${working}</dd></div>
+    <div${blocked?' class="overview-error"':''}><dt>Needs attention</dt><dd>${blocked}</dd></div>
+   </dl>
+  </section>
+  ${s.summary?`<section class="overview-section overview-result"><div class="overview-heading"><h2>Result</h2></div><p>${esc(s.summary)}</p></section>`:''}
+  <section class="overview-section overview-team" aria-labelledby="overview-team">
+   <div class="overview-heading"><h2 id="overview-team">Team</h2><span>${s.members.length} ${s.members.length===1?'member':'members'}</span></div>
+   ${s.members.map((m,i)=>{
+    const reportedWhileIdle=m.state==='waiting'&&hasReported(m);
+    const {label}=memberCue({state:m.state,taskState:reportedWhileIdle?m.taskState:undefined});
+    return row(m,i,label,reportedWhileIdle?'done':m.state,overviewMemberDetails(m,s));
+   }).join('')}
+  </section>
+  <section class="overview-section overview-supervisor" aria-label="Swarm supervision">
+   ${row({name:'monitor',role:'monitor',state:monitorCue.state},0,monitor.errors?.length?`${monitor.errors.length} check issue${monitor.errors.length===1?'':'s'}`:monitorCue.label,monitor.errors?.length?'blocked':monitorCue.state,`
+   <div class="overview-member-context"><h3>Latest check</h3><p>${esc(monitor.action||'Awaiting first check')}</p></div>
+   ${monitorMeta(s)}
+   ${monitor.errors?.length?`<div class="overview-member-context overview-error"><h3>Session check issues</h3>${monitor.errors.map(e=>'<p>'+esc(e)+'</p>').join('')}</div>`:''}`)}
+  </section>
+ </div>`;
 }
 const expandedPosts=new Set();
 function board(s){
@@ -162,11 +247,29 @@ function captureRenderState(){
  const swarm=current(),draft=swarm?boardDraft(swarm.id):{text:'',to:'coordinator'};
  const activeElement=doc.activeElement;
  const activePost=activeElement?.closest?.('[data-post-id]');
+ const overviewItems=[...root.querySelectorAll('[data-overview-item]')];
+ const activeOverviewItem=activeElement?.closest?.('[data-overview-item]');
+ if(overviewItems.length&&renderedSwarmId){
+  const open=overviewItems.filter(el=>el.open).map(el=>el.dataset.overviewItem);
+  if(open.length)overviewDisclosures.set(renderedSwarmId,new Set(open));
+  else overviewDisclosures.delete(renderedSwarmId);
+ }
  const readingPost=tab==='Board'?[...root.querySelectorAll('#feed [data-post-id]')].find(el=>{
   const bounds=el.getBoundingClientRect();
   return bounds.bottom>0&&bounds.top<(win?.innerHeight||0);
  }):null;
- const preserveScroll=!resetScrollOnRender;
+ const sameSwarm=swarm?.id===renderedSwarmId;
+ const switchingOverview=!sameSwarm&&(tab==='Overview'||overviewItems.length>0);
+ const preserveScroll=!resetScrollOnRender&&!switchingOverview;
+ const headerBottom=root.querySelector('.sticky-top')?.getBoundingClientRect().bottom||0;
+ const focusBounds=tab==='Overview'&&preserveScroll&&activeOverviewItem
+  ?activeElement.getBoundingClientRect():null;
+ const overviewFocusTop=focusBounds&&focusBounds.bottom>headerBottom&&focusBounds.top<win.innerHeight
+  ?focusBounds.top:null;
+ const overviewAnchor=tab==='Overview'&&preserveScroll&&win?.scrollY&&overviewItems.find(el=>{
+  const bounds=el.getBoundingClientRect();
+  return bounds.bottom>headerBottom&&bounds.top<win.innerHeight;
+ });
  resetScrollOnRender=false;
  return {
   swarm,
@@ -183,6 +286,8 @@ function captureRenderState(){
    selectionDirection:activeElement?.selectionDirection??'none',
    postId:activePost?.dataset.postId,
    postAction:activeElement?.matches?.('[data-post-action]')?activeElement.dataset.postAction:null,
+   overviewItem:sameSwarm?activeOverviewItem?.dataset.overviewItem:null,
+   overviewAction:activeElement?.dataset?.overviewAction,
   },
   scroll:{
    preserve:preserveScroll,
@@ -190,6 +295,8 @@ function captureRenderState(){
    y:win?.scrollY||0,
    feedTop:root.querySelector('#feed')?.scrollTop||0,
    readingAnchor:preserveScroll&&readingPost?{id:readingPost.dataset.postId,top:readingPost.getBoundingClientRect().top}:null,
+   overviewFocusTop,
+   overviewAnchor:overviewAnchor?{id:overviewAnchor.dataset.overviewItem,top:overviewAnchor.getBoundingClientRect().top}:null,
   },
  };
 }
@@ -211,7 +318,12 @@ function restoreRenderState(state){
  }
  const post=focus.postId&&[...root.querySelectorAll('[data-post-id]')].find(el=>el.dataset.postId===focus.postId);
  const postAction=post&&focus.postAction&&[...post.querySelectorAll('[data-post-action]')].find(el=>el.dataset.postAction===focus.postAction);
- const focusTarget=postAction||post||(focus.id?doc.getElementById(focus.id):focus.formId&&focus.field?doc.getElementById(focus.formId)?.elements.namedItem(focus.field):null);
+ const overviewItems=[...root.querySelectorAll('[data-overview-item]')];
+ const overviewItem=overviewItems.find(el=>el.dataset.overviewItem===focus.overviewItem);
+ const overviewSummary=overviewItem?.querySelector('summary');
+ const overviewAction=overviewItem?.open&&[...overviewItem.querySelectorAll('[data-overview-action]')].find(el=>el.dataset.overviewAction===focus.overviewAction);
+ const overviewFocusMatch=focus.overviewAction?overviewAction:overviewSummary;
+ const focusTarget=overviewFocusMatch||overviewSummary||postAction||post||(focus.id?doc.getElementById(focus.id):focus.formId&&focus.field?doc.getElementById(focus.formId)?.elements.namedItem(focus.field):null);
  if(focusTarget){
   focusTarget.focus({preventScroll:true});
   if(focus.selectionStart!==null&&focusTarget.setSelectionRange){
@@ -227,6 +339,12 @@ function restoreRenderState(state){
  else if(scroll.readingAnchor){
   const anchor=[...root.querySelectorAll('[data-post-id]')].find(el=>el.dataset.postId===scroll.readingAnchor.id);
   if(anchor)win?.scrollBy(0,anchor.getBoundingClientRect().top-scroll.readingAnchor.top);
+  else win?.scrollTo(scroll.x,scroll.y);
+ }else if(overviewFocusMatch&&scroll.overviewFocusTop!==null){
+  win?.scrollBy(0,overviewFocusMatch.getBoundingClientRect().top-scroll.overviewFocusTop);
+ }else if(scroll.overviewAnchor){
+  const anchor=overviewItems.find(el=>el.dataset.overviewItem===scroll.overviewAnchor.id);
+  if(anchor)win?.scrollBy(0,anchor.getBoundingClientRect().top-scroll.overviewAnchor.top);
   else win?.scrollTo(scroll.x,scroll.y);
  }else win?.scrollTo(scroll.x,scroll.y);
  const feed=root.querySelector('#feed');

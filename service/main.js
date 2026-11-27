@@ -292,12 +292,12 @@ function appendPost(s, from, to, text, kind = "message", wake = true) {
 var publicSwarm = (s) => ({ ...s, seenEvents: undefined, members: s.members.map(({ queue, acked, modelRef, ...m }) => ({ ...m, pending: queue.length })) });
 function finish(s, summary, failed = false) {
   if (!failed) {
-    const verify = s.posts.findLast((p) => s.members.some((m) => m.name === p.from && m.role === "verifier") && ["verified", "changes"].includes(p.kind));
+    const isVerifier = (name) => s.members.some((m) => m.name === name && m.role === "verifier"), verify = s.posts.findLast((p) => isVerifier(p.from) && ["verified", "changes"].includes(p.kind));
     if (!verify || verify.kind !== "verified")
       throw Error("Independent verification required");
     if (s.members.some((m) => m.role === "worker" && m.state !== "retired" && m.taskState !== "reported"))
       throw Error("Workers have not all reported");
-    if (s.posts.some((p) => p.id > verify.id && p.kind === "done"))
+    if (s.posts.some((p) => p.id > verify.id && p.kind === "done" && !isVerifier(p.from)))
       throw Error("New work after verification; verify again");
   }
   s.status = failed ? "failed" : "done";

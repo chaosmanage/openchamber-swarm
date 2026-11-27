@@ -139,39 +139,71 @@ async function launchFixture(t,{failSeed=false,holdSeed=false}={}){
  const req=async(p,b)=>{const r=await fetch('http://127.0.0.1:'+port+p,{method:b?'POST':'GET',headers:{Authorization:'Bearer test-token','Content-Type':'application/json'},...(b?{body:JSON.stringify(b)}:{})});const v=await r.json();assert.equal(r.status,200,JSON.stringify(v));return v;};
  t.after(async()=>{release();cleanup?.();if(proc.exitCode===null&&proc.signalCode===null){proc.kill();await new Promise(r=>proc.once('exit',r));}process.env.HOME=oldHome;await new Promise(r=>host.close(r));await rm(home,{recursive:true,force:true});});
  await wait(()=>req('/health'));
- const hooks={},commands=[],admissions=new Map(),attempts=[],synthetics=[],contexts=[],updates=[],model={providerID:'picker',id:'chosen',variant:'high'};
+ const hooks={},commands=[],admissions=new Map(),attempts=[],synthetics=[],contexts=[],turns=[],agentSwitches=[],model={providerID:'picker',id:'chosen',variant:'high'};
+ const sessionID='ses_native_launch',task='Build a launch fixture';
+ const sessions=new Map([[sessionID,{id:sessionID,agent:'plan',model}]]);
+ const runTurn=async({sessionID})=>{
+  const {agent,model}=sessions.get(sessionID);
+  turns.push({sessionID,agent,model});
+  statuses.set(sessionID,'busy');
+  const event={sessionID,agent,system:[],messages:[]};
+  await hooks.context(event);
+  contexts.push(event);
+ };
  const ctx={location:{directory:'/repo'},session:{
   hook:async(n,f)=>hooks[n]=f,
-  create:async input=>({id:input.id,model:input.model||model}),
-  get:async({sessionID})=>({id:sessionID,model,title:updates.at(-1)?.title}),
-  update:async input=>updates.push(input),switchModel:async()=>{},
+  create:async({id,agent='plan',model:selected=model,parentID,title,permissions})=>{
+   if(!sessions.has(id))sessions.set(id,{id,agent,model:selected,parentID,title,permissions:permissions??sessions.get(parentID)?.permissions});
+   return {...sessions.get(id)};
+  },
+  get:async({sessionID})=>({...sessions.get(sessionID)}),
+  update:async({sessionID,...update})=>{Object.assign(sessions.get(sessionID),update);},
+  switchAgent:async input=>{agentSwitches.push(input);sessions.get(input.sessionID).agent=input.agent;},
+  switchModel:async({sessionID,model})=>{sessions.get(sessionID).model=model;},
   prompt:async input=>{
+   assert.ok(!Object.hasOwn(input,'agent'),'V2 does not accept an agent in prompt input');
    attempts.push(input);
    if(admissions.has(input.id))return admissions.get(input.id);
-   const result={id:input.id,sessionID:input.sessionID,type:'user',text:input.text};admissions.set(input.id,result);statuses.set(input.sessionID,'busy');
-   const event={sessionID:input.sessionID,system:[],messages:[]};await hooks.context(event);contexts.push(event);
+   const result={id:input.id,sessionID:input.sessionID,type:'user',text:input.text};admissions.set(input.id,result);
+   await runTurn(input);
    if(holdSeed){holdSeed=false;await held;}
    if(failSeed){failSeed=false;throw Error('Simulated lost native acknowledgement');}
    return result;
   },
-  synthetic:async input=>{synthetics.push(input);statuses.set(input.sessionID,'busy');const event={sessionID:input.sessionID,system:[],messages:[]};await hooks.context(event);contexts.push(event);return {id:input.id};}
+  synthetic:async input=>{
+   assert.ok(!Object.hasOwn(input,'agent'),'V2 does not accept an agent in synthetic input');
+   synthetics.push(input);
+   await runTurn(input);
+   return {id:input.id};
+  }
  },event:{async *subscribe(){}},experimental:{generate:{text:async()=>({text:'Launch fixture'})}},command:{transform:async f=>f({add:c=>commands.push(c)})},tool:{transform:async f=>f({add(){}})}};
  cleanup=await plugin.setup(ctx);
- const sessionID='ses_native_launch',task='Build a launch fixture',command=()=>commands[0].execute({sessionID,prompt:{text:task},delivery:'queue'});
+ const command=()=>commands[0].execute({sessionID,prompt:{text:task},delivery:'queue'});
+ const sendFromPlan=async composed=>{
+  // OpenChamber applySendSelection persists model and agent before calling session.command.
+  const [,name,text]=/^\/(\S+) ([\s\S]*)$/.exec(composed);
+  await ctx.session.switchModel({sessionID,model});
+  await ctx.session.switchAgent({sessionID,agent:'plan'});
+  await commands.find(c=>c.name===name).execute({sessionID,prompt:{text},delivery:'queue'});
+ };
  const state=async()=> (await req('/list?directory=%2Frepo'))[0];
  const restart=async(rewrite)=>{proc.kill('SIGKILL');await new Promise(r=>proc.once('exit',r));if(rewrite){const file=path.join(home,'swarms.json'),saved=JSON.parse(await readFile(file,'utf8'));rewrite(saved);await writeFile(file,JSON.stringify(saved));}proc=spawnService();await wait(()=>req('/health'));};
- return {req,command,state,sessionID,task,admissions,attempts,synthetics,contexts,statuses,ctx,release,restart,model,updates};
+ return {req,command,sendFromPlan,state,sessionID,task,admissions,attempts,synthetics,contexts,statuses,ctx,release,restart,model,turns,agentSwitches};
 }
 
-test('native command and compose-then-send launch one visible prompt, with independent later turns and board posts',async t=>{
+test('compose then send /swarm from Plan launches one visible Build prompt and later resumes board work in Build',async t=>{
  const f=await launchFixture(t);
  // The panel composes "/swarm " + task; OpenChamber dispatches its argument to this native command.
- await Promise.all([f.command(),f.command(),f.command()]);
+ await f.sendFromPlan('/swarm '+f.task);
+ await Promise.all([f.command(),f.command()]);
  const s=await f.state();assert.equal(s.posts.length,1);assert.deepEqual(s.posts.map(p=>[p.from,p.to,p.kind,p.text]),[['user',['coordinator'],'brief',f.task]]);
  await wait(()=>f.admissions.size===1);await wait(async()=> (await f.state()).members[0].seeded);
  assert.equal(f.attempts.length,1);assert.equal(f.attempts[0].text,f.task);assert.equal(f.attempts[0].delivery,'queue');assert.equal(f.attempts[0].metadata.initial,true);
  assert.equal((await f.state()).launchModel,'picker/chosen');assert.equal((await f.state()).launchModelRef.variant,'high');
+ assert.deepEqual(f.agentSwitches,[{sessionID:f.sessionID,agent:'plan'},{sessionID:f.sessionID,agent:'build'}]);
+ assert.deepEqual(f.turns[0],{sessionID:f.sessionID,agent:'build',model:f.model});
  assert.equal(f.contexts[0].messages.length,0);assert.equal(f.contexts[0].system[0].text.split(f.task).length-1,1);
+ assert.ok(f.contexts[0].system[0].text.includes('SwarmActivity('+JSON.stringify(s.id)+')'));
  assert.equal((await f.state()).members[0].pending,0);assert.equal((await f.state()).turns,1);
  f.statuses.set(f.sessionID,'idle');await f.req('/idle',{sessionId:f.sessionID,directory:'/repo'});
  await new Promise(r=>setTimeout(r,350));assert.equal(f.synthetics.length,0);
@@ -180,9 +212,52 @@ test('native command and compose-then-send launch one visible prompt, with indep
  assert.equal(f.admissions.size,2);assert.equal([...f.admissions.values()].filter(m=>m.text===f.task).length,2);
  // An addressed board post with identical text is also a new event and wakes normally.
  f.statuses.set(f.sessionID,'idle');await f.req('/idle',{sessionId:f.sessionID,directory:'/repo'});
+ await f.ctx.session.switchAgent({sessionID:f.sessionID,agent:'plan'});
  await f.req('/message',{id:s.id,to:'coordinator',text:f.task});
  await wait(()=>f.synthetics.length===1,15000);await wait(()=>f.contexts.at(-1)?.system[0]?.text.includes('"kind":"instruction"'));
+ assert.deepEqual(f.turns.at(-1),{sessionID:f.sessionID,agent:'build',model:f.model});
  assert.equal((await f.state()).posts.length,2);assert.match(f.contexts.at(-1).system[0].text,/"kind":"instruction"/);
+});
+
+test('worker and verifier start in Build with role models and inherited approvals; ordinary Plan is unaffected',async t=>{
+ const f=await launchFixture(t);
+ const coordinator={providerID:'custom',id:'lead'},worker={providerID:'custom',id:'worker'};
+ const permissions=[{action:'shell',resource:'*',effect:'ask'}];
+ await f.ctx.session.update({sessionID:f.sessionID,permissions});
+ await f.req('/settings',{coordinatorModel:'custom/lead',workerModel:'custom/worker'});
+ await f.command();await wait(async()=> (await f.state()).members[0].seeded);
+ assert.deepEqual(f.turns[0],{sessionID:f.sessionID,agent:'build',model:coordinator});
+
+ const agent=(action,input)=>f.req('/agent',{sessionId:f.sessionID,action,input});
+ await agent('add',{name:'worker',brief:'Make the change',role:'worker'});
+ await agent('add',{name:'verify',brief:'Check the change',role:'verifier',deferred:true});
+ const member=async name=>(await f.state()).members.find(m=>m.name===name);
+ const seeded=async name=>wait(async()=>{const m=await member(name);return m?.seeded&&m;});
+ const work=await seeded('worker');
+ assert.equal((await member('verify')).sessionId,null);
+ await agent('post',{text:'@verify Start independent verification'});
+ const verifier=await seeded('verify');
+ for(const [m,model] of [[work,worker],[verifier,f.model]]){
+  const info=await f.ctx.session.get({sessionID:m.sessionId});
+  assert.equal(info.parentID,f.sessionID);assert.deepEqual(info.permissions,permissions);
+  assert.deepEqual(f.turns.find(turn=>turn.sessionID===m.sessionId),{sessionID:m.sessionId,agent:'build',model});
+ }
+ assert.deepEqual(f.agentSwitches,[{sessionID:f.sessionID,agent:'build'}]);
+ assert.deepEqual((await f.ctx.session.get({sessionID:f.sessionID})).permissions,permissions);
+
+ f.statuses.set(work.sessionId,'waiting-permission');
+ await f.req('/session-events',{event:{id:'approval-1',type:'permission-asked',session:{id:work.sessionId}}});
+ await f.req('/message',{id:(await f.state()).id,to:work.name,text:'Resume after approval'});
+ const blocked=await member(work.name);
+ assert.equal(blocked.state,'blocked');assert.equal(blocked.error,'Tool approval required');
+ assert.equal(f.synthetics.length,0);
+
+ const ordinaryID='ses_ordinary_plan';
+ await f.ctx.session.create({id:ordinaryID,agent:'plan'});
+ await f.ctx.session.prompt({sessionID:ordinaryID,id:'msg_ordinary_plan',text:'Plan a regular task'});
+ assert.deepEqual(f.turns.at(-1),{sessionID:ordinaryID,agent:'plan',model:f.model});
+ assert.deepEqual(f.contexts.at(-1).system,[]);
+ assert.deepEqual(f.agentSwitches,[{sessionID:f.sessionID,agent:'build'}]);
 });
 
 test('a lost start acknowledgement can be retried as the same native command',async t=>{
@@ -202,9 +277,11 @@ test('lost seed acknowledgement blocks with recovery and retry reuses the admitt
  const blocked=await wait(async()=>{const s=await f.state();return s.members[0].state==='blocked'&&s;});
  assert.match(blocked.members[0].error,/uncertain.*Retry/);assert.equal(f.admissions.size,1);assert.equal(f.attempts.length,1);assert.equal(blocked.posts.length,1);
  await new Promise(r=>setTimeout(r,350));assert.equal(f.attempts.length,1);
+ await f.ctx.session.switchAgent({sessionID:f.sessionID,agent:'plan'});
  f.statuses.set(f.sessionID,'idle');await f.req('/retry',{id:blocked.id,name:'coordinator'});
  await wait(()=>f.attempts.length===2);await wait(async()=> (await f.state()).members[0].seeded);
  assert.equal(f.attempts[0].id,f.attempts[1].id);assert.equal(f.admissions.size,1);assert.equal((await f.state()).turns,1);assert.equal((await f.state()).posts.length,1);assert.equal(f.synthetics.length,0);
+ assert.deepEqual(f.agentSwitches.at(-1),{sessionID:f.sessionID,agent:'build'});
 });
 
 test('restart after seed admission exposes recovery instead of silently replaying',async t=>{
@@ -234,11 +311,13 @@ test('worker seed retry survives a lost acknowledgement after its brief was cons
 
 test('legacy launch-brief migration preserves a later identical addressed instruction',async t=>{
  const f=await launchFixture(t);await f.command();await wait(async()=> (await f.state()).members[0].seeded);f.statuses.set(f.sessionID,'idle');
+ await f.ctx.session.switchAgent({sessionID:f.sessionID,agent:'plan'});
  await f.restart(saved=>{
   const s=saved.swarms[0],m=s.members[0];delete s.launchPostId;delete m.seeded;
   m.initialized=true;m.state='waiting';m.queue=[1,2];m.acked=[];m.retryAt=0;
   s.posts.push({id:2,at:Date.now(),from:'user',to:['coordinator'],kind:'instruction',text:s.task});
  });
  await wait(()=>f.synthetics.length===1);await wait(()=>f.contexts.at(-1)?.system[0]?.text.includes('"kind":"instruction"'));
+ assert.equal(f.turns.at(-1).agent,'build');
  assert.deepEqual(f.synthetics[0].metadata.posts,[2]);assert.equal(f.attempts.length,1);assert.equal((await f.state()).posts.length,2);
 });

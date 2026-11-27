@@ -39,7 +39,9 @@ export function appendPost(s,from,to,text,kind='message',wake=true){
 }
 export const publicSwarm=s=>({...s,seenEvents:undefined,members:s.members.map(({queue,acked,modelRef,...m})=>({...m,pending:queue.length}))});
 export function finish(s,summary,failed=false){
- if(!failed){const verify=s.posts.findLast(p=>s.members.some(m=>m.name===p.from&&m.role==='verifier')&&['verified','changes'].includes(p.kind));if(!verify||verify.kind!=='verified')throw Error('Independent verification required');if(s.members.some(m=>m.role==='worker'&&m.state!=='retired'&&m.taskState!=='reported'))throw Error('Workers have not all reported');if(s.posts.some(p=>p.id>verify.id&&p.kind==='done'))throw Error('New work after verification; verify again');}
+ if(!failed){const isVerifier=name=>s.members.some(m=>m.name===name&&m.role==='verifier'),verify=s.posts.findLast(p=>isVerifier(p.from)&&['verified','changes'].includes(p.kind));if(!verify||verify.kind!=='verified')throw Error('Independent verification required');if(s.members.some(m=>m.role==='worker'&&m.state!=='retired'&&m.taskState!=='reported'))throw Error('Workers have not all reported');
+  // A verifier's own posts after its verified result (its done summary) are not new work.
+  if(s.posts.some(p=>p.id>verify.id&&p.kind==='done'&&!isVerifier(p.from)))throw Error('New work after verification; verify again');}
  s.status=failed?'failed':'done';s.summary=String(summary||'').slice(0,20000);s.updated=Date.now();
 }
 export function delivery(s,m){return m.queue.map(id=>s.posts.find(p=>p.id===id)).filter(Boolean).map(p=>'#'+p.id+' @'+p.from+' → '+p.to.map(x=>'@'+x).join(', ')+' ['+p.kind+']\n'+p.text).join('\n\n');}

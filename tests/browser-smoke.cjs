@@ -5,7 +5,147 @@ const now=Date.now(),members=[['coordinator','coordinator','active'],['shell-bui
 const swarm={id:'test',key:'SWARM-1',title:'Build a playful desktop application',task:'Create a modular application with independent workers and verification.',directory:'/repo',status:'running',members,posts:[{id:1,at:now,from:'coordinator',to:['shell-builder','games-builder'],kind:'brief',text:'Implement isolated components with tests.'},{id:2,at:now+1000,from:'shell-builder',to:['coordinator'],kind:'report',text:'Shell is ready. Verifier can inspect the result.'},{id:3,at:now+2000,from:'games-builder',to:['verifier'],kind:'done',text:'All game tests pass.'}],turns:5};
 const tokens=Object.fromEntries('background elevated foreground muted subtle border hover selection focus primary mutedSurface elevatedForeground active selectionForeground primaryForeground primaryText successText warningText errorText infoText success warning error info font mono radius'.split(' ').map(k=>[k,'#121317']));
 const fixture='<html><body style="margin:0"><iframe id="guest" src="/panel/index.html" style="border:0;width:100%;height:100vh"></iframe><script>const data='+JSON.stringify(swarm)+';window.fixtureData=data;window.fixtureSwarms=[data];window.fixtureOpenedSessions=[];window.fixtureMessageRequests=0;window.fixtureListRequests=0;window.fixtureFailNextMessage=false;window.fixtureHoldNextMessage=false;window.fixturePendingMessage=null;const addMessage=message=>{const target=window.fixtureSwarms.find(item=>item.id===message.id);if(!target)return;target.posts.push({id:Math.max(0,...target.posts.map(post=>post.id))+1,at:Date.now(),from:"coordinator",to:message.to==="all"?target.members.map(member=>member.name):[message.to],kind:"message",text:message.text});};window.fixtureResolveMessage=()=>{const pending=window.fixturePendingMessage;if(!pending)return;addMessage(pending.message);pending.source.postMessage({channel:pending.channel,v:1,type:"result",id:pending.id,ok:true,payload:{status:200,body:JSON.stringify({ok:true})}},"*");window.fixturePendingMessage=null;};const tokens='+JSON.stringify(tokens)+';window.addEventListener("message",e=>{const d=e.data;if(d.channel!=="openchamber.sdk")return;const send=(type,other)=>e.source.postMessage({channel:d.channel,v:1,type,...other},"*");if(d.type==="hello")send("ready",{payload:{theme:{mode:"dark",tokens},locale:"en",directory:"/repo",session:{id:"ses_0",title:"Demo",busy:false},surface:"panel",connection:{connected:false,account:""},settings:{},item:null}});else if(d.type==="open-session"){window.fixtureOpenedSessions.push(d.payload.sessionId);send("result",{id:d.id,ok:true,payload:{}});}else if(d.type==="service-request"){const p=d.payload.path;let response;if(p==="/settings")response={workerModel:"",verifierModel:""};else if(p==="/models")response=[{id:"test/worker",name:"Worker model"}];else if(p==="/delete")response={ok:true};else if(p==="/message"){const message=JSON.parse(d.payload.body||"{}");window.fixtureMessageRequests++;if(window.fixtureFailNextMessage){window.fixtureFailNextMessage=false;send("result",{id:d.id,ok:true,payload:{status:500,body:JSON.stringify({error:"Test message failure."})}});return;}if(window.fixtureHoldNextMessage){window.fixtureHoldNextMessage=false;window.fixturePendingMessage={source:e.source,channel:d.channel,id:d.id,message};return;}addMessage(message);response={ok:true};}else if(p==="/list"){window.fixtureListRequests++;response=window.fixtureSwarms;}else response=[data];send("result",{id:d.id,ok:true,payload:{status:200,body:JSON.stringify(response)}});}});</script></body></html>';
-(async()=>{const server=http.createServer((req,res)=>{if(req.url==='/'){res.end(fixture);return;}const resource=path.join(process.cwd(),req.url);if(!resource.startsWith(process.cwd()+'/panel/')){res.statusCode=404;return res.end();}const filename=req.url==='/panel/main.js'&&process.env.PANEL_MAIN?process.env.PANEL_MAIN:resource;res.setHeader('Content-Type',filename.endsWith('.js')?'text/javascript':filename.endsWith('.css')?'text/css':'text/html');res.end(fs.readFileSync(filename));});await new Promise(r=>server.listen(0,'127.0.0.1',r));const browser=await chromium.launch({headless:true,...(process.env.PLAYWRIGHT_CHROMIUM?{executablePath:process.env.PLAYWRIGHT_CHROMIUM}:{}),args:['--no-sandbox']});try{const page=await browser.newPage({viewport:{width:660,height:900}}),errors=[];page.on('pageerror',e=>errors.push(e.message));await page.goto('http://127.0.0.1:'+server.address().port);const frame=page.frameLocator('#guest');await frame.getByText('GOAL',{exact:true}).waitFor({timeout:5000});await page.screenshot({path:'.dev/overview.png'});await frame.locator('[data-tab=Board]').click();await frame.getByText('All game tests pass.').waitFor();await page.screenshot({path:'.dev/board.png'});
+async function checkOverview(browser,url){
+ const page=await browser.newPage({viewport:{width:1000,height:720},reducedMotion:'reduce'});
+ const errors=[];
+ page.on('pageerror',error=>errors.push(error.message));
+ try{
+  await page.goto(url);
+  const frame=page.frameLocator('#guest');
+  const section=frame.getByRole('region',{name:'Team',exact:true});
+  const rows=section.locator('.overview-member');
+  const row=name=>rows.filter({has:frame.getByText('@'+name,{exact:true})});
+  const shell=row('shell-builder'),games=row('games-builder');
+  const shellSummary=shell.locator('summary'),gamesSummary=games.locator('summary');
+  const shellChat=shell.getByRole('button',{name:'Open chat'});
+  const reason=shell.getByText('Needs a file-system permission before continuing.');
+  await shellSummary.getByText('Needs attention',{exact:true}).waitFor();
+  assert.equal(await rows.count(),4);
+  assert.equal(await rows.and(frame.locator('[open]')).count(),0);
+  assert.equal(await reason.isVisible(),false);
+  assert.equal(await shellChat.isVisible(),false);
+  assert.ok(await shellSummary.getByText('worker',{exact:true}).isVisible());
+  await page.screenshot({path:'.dev/overview-compact-desktop.png'});
+
+  await shellSummary.focus();
+  await page.keyboard.press('Enter');
+  await reason.waitFor();
+  assert.ok(await shell.getByRole('heading',{name:'Brief'}).isVisible());
+  assert.ok(await shell.getByRole('button',{name:'Retry',exact:true}).isVisible());
+  await gamesSummary.click();
+  assert.ok(await games.getByText('All game tests pass.').isVisible());
+  assert.ok(await reason.isVisible());
+  await games.getByRole('button',{name:'Open chat'}).click();
+  await page.waitForFunction(()=>window.fixtureOpenedSessions.includes('ses_2'));
+  await gamesSummary.click();
+  assert.equal(await games.getByText('All game tests pass.').isVisible(),false);
+  await shellSummary.press('Space');
+  assert.equal(await reason.isVisible(),false);
+  await shellSummary.click();
+  await page.screenshot({path:'.dev/overview-expanded-desktop.png'});
+
+  await page.setViewportSize({width:360,height:460});
+  await shellSummary.evaluate(el=>el.blur());
+  const shellPosition=()=>shellSummary.evaluate(el=>el.getBoundingClientRect().top);
+  await shellSummary.evaluate(el=>{
+   const win=el.ownerDocument.defaultView,sticky=el.ownerDocument.querySelector('.sticky-top');
+   win.scrollBy(0,el.getBoundingClientRect().top-sticky.getBoundingClientRect().bottom-6);
+  });
+  const topBefore=await shellPosition();
+  await page.evaluate(()=>{
+   const data=window.fixtureData;
+   data.summary='A result arriving above the roster should not move the currently read member.';
+   data.posts.push({id:4,at:Date.now(),from:'shell-builder',to:['coordinator'],kind:'report',text:'The shell worker posted a fresh update.'});
+   document.querySelector('#guest').contentWindow.postMessage({
+    channel:'openchamber.sdk',v:1,type:'service-event',payload:{topic:'swarm.changed',data:null},
+   },'*');
+  });
+  await shell.getByText('The shell worker posted a fresh update.').waitFor();
+  assert.ok(await reason.isVisible());
+  assert.ok(Math.abs(await shellPosition()-topBefore)<2);
+  assert.equal(await games.getByText('All game tests pass.').isVisible(),false);
+
+  // A growing post must not push a focused action out of a short mobile pane.
+  await page.setViewportSize({width:320,height:460});
+  await shellSummary.press('Tab');
+  const chatPosition=()=>shellChat.evaluate(el=>{
+   const win=el.ownerDocument.defaultView,bounds=el.getBoundingClientRect();
+   const header=el.ownerDocument.querySelector('.sticky-top');
+   return {
+    focused:el===el.ownerDocument.activeElement,
+    top:bounds.top,
+    visible:bounds.top>=header.getBoundingClientRect().bottom&&bounds.bottom<=win.innerHeight,
+   };
+  });
+  await shellChat.evaluate(el=>{
+   const win=el.ownerDocument.defaultView;
+   win.scrollBy(0,el.getBoundingClientRect().bottom-win.innerHeight+12);
+  });
+  const chatBefore=await chatPosition();
+  assert.ok(chatBefore.focused&&chatBefore.visible);
+  await page.evaluate(()=>{
+   window.fixtureData.posts.push({id:5,at:Date.now(),from:'shell-builder',to:['coordinator'],kind:'report',text:[
+    'The fixture update deliberately spans several lines.',
+    'The keyboard-focused action is below this post.',
+    'When the post grows, the action should keep its position.',
+    'Remaining visible is important on narrow panes.',
+   ].join('\n')});
+   document.querySelector('#guest').contentWindow.postMessage({
+    channel:'openchamber.sdk',v:1,type:'service-event',payload:{topic:'swarm.changed',data:null},
+   },location.origin);
+  });
+  await shell.getByText(/The fixture update deliberately/).waitFor();
+  const chatAfter=await chatPosition();
+  assert.ok(chatAfter.focused&&chatAfter.visible,`Focused action left the visible pane: ${JSON.stringify(chatAfter)}`);
+  assert.ok(Math.abs(chatAfter.top-chatBefore.top)<2);
+  await page.screenshot({path:'.dev/overview-mobile-focused-refresh.png'});
+  await shellChat.click();
+  await page.waitForFunction(()=>window.fixtureOpenedSessions.includes('ses_1'));
+
+  await page.evaluate(()=>{
+   const second=structuredClone(window.fixtureData);
+   second.id='test-two';second.key='SWARM-2';second.title='Second test swarm';second.summary='';
+   second.task='Confirm compact roster layout. '.repeat(15);
+   second.members[1].model='provider/'+'long-model-identifier'.repeat(10);
+   second.members[1].paths=['src/'+'long-owned-path'.repeat(16)];
+   window.fixtureSwarms.push(second);
+  });
+  await frame.locator('#refresh').evaluate(el=>el.click());
+  const select=frame.locator('#swarmSelect');
+  await select.waitFor();
+  assert.equal(await select.inputValue(),'test-two');
+  assert.equal(await rows.and(frame.locator('[open]')).count(),0);
+  await gamesSummary.press('Enter');
+  await select.selectOption('test');
+  assert.ok(await reason.isVisible());
+  assert.equal(await games.getByText('All game tests pass.').isVisible(),false);
+  await page.evaluate(()=>document.querySelector('#guest').contentWindow.postMessage({
+   channel:'openchamber.sdk',v:1,type:'item',payload:{item:{kind:'link',identifier:'SWARM-2'}},
+  },'*'));
+  await games.getByText('All game tests pass.').waitFor();
+  assert.equal(await select.inputValue(),'test-two');
+  assert.equal(await reason.isVisible(),false);
+  assert.equal(await shellSummary.evaluate(el=>el===el.ownerDocument.activeElement),false);
+
+  await page.setViewportSize({width:320,height:950});
+  await gamesSummary.click();
+  await frame.getByText('Read full goal',{exact:true}).click();
+  await frame.getByText('Show less',{exact:true}).click();
+  await shellSummary.click();
+  assert.ok(await reason.isVisible());
+  assert.ok((await shellSummary.boundingBox()).height>=44);
+  assert.ok((await shellChat.boundingBox()).height>=40);
+  assert.ok(await frame.locator('.overview').evaluate(el=>el.scrollWidth<=el.clientWidth+1));
+  assert.ok(await frame.locator('html').evaluate(el=>el.scrollWidth<=el.clientWidth+1));
+  await frame.locator('body').evaluate(el=>el.ownerDocument.defaultView.scrollTo(0,0));
+  await page.screenshot({path:'.dev/overview-expanded-mobile.png'});
+  await shellSummary.click();
+  await page.screenshot({path:'.dev/overview-compact-mobile.png'});
+  assert.deepEqual(errors,[]);
+ }finally{await page.close();}
+}
+
+(async()=>{const server=http.createServer((req,res)=>{if(req.url==='/'){res.end(fixture);return;}const resource=path.join(process.cwd(),req.url);if(!resource.startsWith(process.cwd()+'/panel/')){res.statusCode=404;return res.end();}const filename=req.url==='/panel/main.js'&&process.env.PANEL_MAIN?process.env.PANEL_MAIN:resource;res.setHeader('Content-Type',filename.endsWith('.js')?'text/javascript':filename.endsWith('.css')?'text/css':'text/html');res.end(fs.readFileSync(filename));});await new Promise(r=>server.listen(0,'127.0.0.1',r));const browser=await chromium.launch({headless:true,...(process.env.PLAYWRIGHT_CHROMIUM?{executablePath:process.env.PLAYWRIGHT_CHROMIUM}:{}),args:['--no-sandbox']});try{const url='http://127.0.0.1:'+server.address().port;await checkOverview(browser,url);const page=await browser.newPage({viewport:{width:660,height:900}}),errors=[];page.on('pageerror',e=>errors.push(e.message));await page.goto(url);const frame=page.frameLocator('#guest');await frame.getByText('GOAL',{exact:true}).waitFor({timeout:5000});await page.screenshot({path:'.dev/overview.png'});await frame.locator('[data-tab=Board]').click();await frame.getByText('All game tests pass.').waitFor();await page.screenshot({path:'.dev/board.png'});
  // Vim-style navigation is active only while the board itself or a post has focus.
  const boardView=frame.locator('#board-view');await boardView.focus();await page.keyboard.press('j');assert.equal(await frame.locator('.board-post').nth(0).evaluate(el=>el===el.ownerDocument.activeElement),true);await page.keyboard.press('j');assert.equal(await frame.locator('.board-post').nth(1).evaluate(el=>el===el.ownerDocument.activeElement),true);await page.keyboard.press('G');assert.equal(await frame.locator('.board-post').last().evaluate(el=>el===el.ownerDocument.activeElement),true);await page.keyboard.press('g');await page.keyboard.press('o');await page.waitForFunction(()=>window.fixtureOpenedSessions.includes('ses_0'));await page.keyboard.press('Escape');assert.equal(await boardView.evaluate(el=>el===el.ownerDocument.activeElement),true);await page.keyboard.press('f');assert.equal(await frame.locator('#follow').getAttribute('aria-pressed'),'false');
   const modifiedDefaults=await boardView.evaluate(el=>['ctrlKey','metaKey','altKey'].map(key=>{const event=new KeyboardEvent('keydown',{key:'f',bubbles:true,cancelable:true,[key]:true});el.dispatchEvent(event);return event.defaultPrevented;}));assert.deepEqual(modifiedDefaults,[false,false,false]);assert.equal(await frame.locator('#follow').getAttribute('aria-pressed'),'false');
